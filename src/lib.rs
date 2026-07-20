@@ -18,7 +18,8 @@ use serde_json::{json, Map, Value};
 /// ```
 #[must_use]
 pub fn markdown_to_adf(markdown: &str) -> Value {
-    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let parser = Parser::new_ext(markdown, options);
     let mut builder = Builder::new();
     for event in parser {
@@ -46,6 +47,29 @@ struct Builder {
     /// Alt text accumulates here while inside an image, then degrades to a link.
     image_dest: Option<String>,
     image_alt: String,
+    /// Checkbox state of the list item being built, when it is a task item.
+    task_state: Option<&'static str>,
+    /// Counter backing the localId every taskList/taskItem must carry.
+    local_id: usize,
+}
+
+/// Map a GitHub alert marker (`> [!NOTE]`) to an ADF panelType.
+fn panel_type_for(marker: &str) -> Option<&'static str> {
+    match marker {
+        "NOTE" => Some("note"),
+        "TIP" => Some("success"),
+        "IMPORTANT" => Some("info"),
+        "WARNING" => Some("warning"),
+        "CAUTION" => Some("error"),
+        _ => None,
+    }
+}
+
+/// Read a `[!MARKER]` alert tag from the start of a blockquote's first text run.
+fn alert_marker(text: &str) -> Option<&'static str> {
+    let rest = text.trim_start().strip_prefix("[!")?;
+    let marker = rest.split(']').next()?;
+    panel_type_for(marker)
 }
 
 impl Builder {
@@ -61,7 +85,15 @@ impl Builder {
             in_table_head: false,
             image_dest: None,
             image_alt: String::new(),
+            task_state: None,
+            local_id: 0,
         }
+    }
+
+    /// Sequential ids are enough: they only need to be unique per document.
+    fn next_local_id(&mut self) -> String {
+        self.local_id += 1;
+        format!("t{}", self.local_id)
     }
 
     fn push(&mut self, node_type: &'static str, attrs: Option<Value>, wraps_inline: bool) {
@@ -74,10 +106,67 @@ impl Builder {
     }
 
     fn pop(&mut self) {
-        let frame = self.stack.pop().expect("balanced events");
-        // Drop content-less paragraphs; keep structural nodes as-is.
-        if frame.node_type == "paragraph" && frame.content.is_empty() {
+        let mut frame = self.stack.pop().expect("balanced events");
+
+        // A list item carrying a checkbox becomes a taskItem, whose content is
+        // INLINE (no paragraph wrapper) per the ADF schema.
+        if frame.node_type == "listItem"
+            && let Some(state) = self.task_state.take()
+        {
+            {
+                let inline = frame
+                    .content
+                    .drain(..)
+                    .flat_map(|node| match node {
+                        Value::Object(mut obj) if obj["type"] == "paragraph" => obj
+                            .remove("content")
+                            .and_then(|c| match c {
+                                Value::Array(items) => Some(items),
+                                _ => None,
+                            })
+                            .unwrap_or_default(),
+                        other => vec![other],
+                    })
+                    .collect::<Vec<_>>();
+                let local_id = self.next_local_id();
+                self.append_block_or_inline(json!({
+                    "type": "taskItem",
+                    "attrs": {"localId": local_id, "state": state},
+                    "content": inline,
+                }));
+                return;
+            }
+        }
+
+        // A list holding taskItems is a taskList, not a bullet/ordered list.
+        if matches!(frame.node_type, "bulletList" | "orderedList")
+            && frame
+                .content
+                .iter()
+                .any(|child| child["type"] == "taskItem")
+        {
+            let local_id = self.next_local_id();
+            let content = std::mem::take(&mut frame.content);
+            // Any plain listItems alongside tasks would be schema-invalid
+            // inside a taskList; keep only the task items.
+            let tasks: Vec<Value> = content
+                .into_iter()
+                .filter(|child| child["type"] == "taskItem")
+                .collect();
+            self.append_block_or_inline(json!({
+                "type": "taskList",
+                "attrs": {"localId": local_id},
+                "content": tasks,
+            }));
             return;
+        }
+
+        if frame.node_type == "paragraph" {
+            self.try_promote_alert(&mut frame);
+            // Drop content-less paragraphs; keep structural nodes as-is.
+            if frame.content.is_empty() {
+                return;
+            }
         }
         let mut node = Map::new();
         node.insert("type".into(), json!(frame.node_type));
@@ -114,6 +203,57 @@ impl Builder {
         }
     }
 
+    /// Promote `> [!NOTE]`-style blockquotes to ADF panels.
+    ///
+    /// Runs as the first paragraph of a blockquote closes: the parser splits
+    /// `[!NOTE]` across several text events, so the marker is only detectable
+    /// once the paragraph's runs are joined. On a match the enclosing
+    /// blockquote is retagged and the marker text is stripped.
+    fn try_promote_alert(&mut self, paragraph: &mut Frame) -> bool {
+        let quote_idx = match self.stack.len().checked_sub(1) {
+            Some(idx) if self.stack[idx].node_type == "blockquote" => idx,
+            _ => return false,
+        };
+        if !self.stack[quote_idx].content.is_empty() {
+            return false;
+        }
+
+        let joined: String = paragraph
+            .content
+            .iter()
+            .filter_map(|n| n["text"].as_str())
+            .collect();
+        let Some(panel_type) = alert_marker(&joined) else {
+            return false;
+        };
+
+        self.stack[quote_idx].node_type = "panel";
+        self.stack[quote_idx].attrs = Some(json!({ "panelType": panel_type }));
+
+        // Drop the runs making up "[!MARKER]", then any leading whitespace.
+        let marker_len = joined.find(']').map_or(0, |i| i + 1);
+        let mut consumed = 0usize;
+        paragraph.content.retain(|node| {
+            let len = node["text"].as_str().map_or(0, str::len);
+            if consumed < marker_len {
+                consumed += len;
+                return false;
+            }
+            true
+        });
+        if let Some(first) = paragraph.content.first_mut()
+            && let Some(text) = first["text"].as_str()
+        {
+            let trimmed = text.trim_start().to_string();
+            if trimmed.is_empty() {
+                paragraph.content.remove(0);
+            } else {
+                first["text"] = json!(trimmed);
+            }
+        }
+        true
+    }
+
     fn text(&mut self, text: &str) {
         if text.is_empty() {
             return;
@@ -138,6 +278,9 @@ impl Builder {
             // Math extensions are not enabled, but if they ever are, the raw
             // expression text degrades to plain text like any other run.
             Event::Text(t) | Event::InlineMath(t) | Event::DisplayMath(t) => self.text(&t),
+            Event::TaskListMarker(checked) => {
+                self.task_state = Some(if checked { "DONE" } else { "TODO" });
+            }
             Event::Code(t) => {
                 // Inline code inside image alt text contributes its literal
                 // text to the accumulating label, like any other text run.
@@ -158,7 +301,7 @@ impl Builder {
             }
             // Raw HTML has no ADF equivalent; keep it visible as plain text.
             Event::Html(t) | Event::InlineHtml(t) => self.text(t.trim_end_matches('\n')),
-            Event::FootnoteReference(_) | Event::TaskListMarker(_) => {}
+            Event::FootnoteReference(_) => {}
         }
     }
 

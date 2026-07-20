@@ -181,6 +181,49 @@ fn image_alt_with_inline_code_keeps_literal_text() {
 }
 
 #[test]
+fn github_alert_blockquote_becomes_adf_panel() {
+    for (marker, panel_type) in [
+        ("NOTE", "note"),
+        ("TIP", "success"),
+        ("IMPORTANT", "info"),
+        ("WARNING", "warning"),
+        ("CAUTION", "error"),
+    ] {
+        let doc = convert(&format!("> [!{marker}]\n> body text"));
+        let node = &doc["content"][0];
+        assert_eq!(node["type"], "panel", "marker {marker}");
+        assert_eq!(node["attrs"]["panelType"], panel_type, "marker {marker}");
+        // The marker line is consumed, not rendered as content
+        assert_eq!(node["content"][0]["type"], "paragraph");
+        assert_eq!(node["content"][0]["content"][0]["text"], "body text");
+    }
+}
+
+#[test]
+fn plain_blockquote_is_still_a_blockquote() {
+    let doc = convert("> just a quote");
+    assert_eq!(doc["content"][0]["type"], "blockquote");
+}
+
+#[test]
+fn task_list_becomes_adf_task_list() {
+    let doc = convert("- [ ] todo item\n- [x] done item");
+    let list = &doc["content"][0];
+    assert_eq!(list["type"], "taskList");
+    assert!(list["attrs"]["localId"].is_string());
+    let first = &list["content"][0];
+    assert_eq!(first["type"], "taskItem");
+    assert_eq!(first["attrs"]["state"], "TODO");
+    assert_eq!(first["content"][0]["text"], "todo item");
+    assert_eq!(list["content"][1]["attrs"]["state"], "DONE");
+}
+
+#[test]
+fn mixed_list_with_checkboxes_and_plain_items_stays_valid() {
+    convert("- [ ] a\n- plain\n- [x] b");
+}
+
+#[test]
 fn empty_input_yields_empty_doc() {
     let doc = convert("");
     assert_eq!(doc["content"].as_array().unwrap().len(), 0);

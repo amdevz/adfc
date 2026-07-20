@@ -36,7 +36,21 @@ jira-md2adf --schema schema/adf-schema.json < ticket-body.md
 | Tables (GFM)                      | `table` / `tableRow` / `tableHeader` / `tableCell` |
 | `---`                             | `rule`                                  |
 | Hard breaks (trailing spaces)     | `hardBreak`                             |
+| `- [ ]` / `- [x]` task lists      | `taskList` / `taskItem` (`TODO` / `DONE`) |
+| `> [!NOTE]` GitHub alerts         | `panel` (see mapping below)             |
 | `**bold**` `*em*` `` `code` `` `~~strike~~` `[link](url)` | `strong` / `em` / `code` / `strike` / `link` marks |
+
+Alert-to-panel mapping (the marker line is consumed, not rendered):
+
+| Markdown        | ADF `panelType` |
+| --------------- | --------------- |
+| `> [!NOTE]`     | `note`          |
+| `> [!TIP]`      | `success`       |
+| `> [!IMPORTANT]`| `info`          |
+| `> [!WARNING]`  | `warning`       |
+| `> [!CAUTION]`  | `error`         |
+
+A blockquote without a marker stays a plain `blockquote`.
 
 Degradations (ADF has no lossless equivalent):
 
@@ -59,7 +73,7 @@ curl -sSL http://go.atlassian.com/adf-json-schema > schema/adf-schema.json
 ## Build
 
 ```sh
-cargo test             # 17 integration tests + doctests
+cargo test             # 21 integration tests + doctests
 cargo build --release  # target/release/jira-md2adf
 cargo install --path . # install into ~/.cargo/bin
 ```
