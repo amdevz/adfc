@@ -1,0 +1,23 @@
+[package]
+name = "jira-md2adf"
+version = "0.1.0"
+edition = "2024"
+description = "Convert Markdown to Atlassian Document Format (ADF), with JSON Schema validation"
+license = "MIT"
+
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false, features = ["simd"] }
+serde_json = "1"
+jsonschema = { version = "0.26", default-features = false }
+
+[lib]
+name = "jira_md2adf"
+path = "src/lib.rs"
+
+[[bin]]
+name = "jira-md2adf"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+strip = true
