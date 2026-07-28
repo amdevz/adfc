@@ -1,0 +1,9 @@
+# Pinned explicitly rather than inherited from the crate's edition.
+#
+# rustfmt derives its style rules from `style_edition`, which defaults to the
+# package edition (2024 here). Leaving it implicit meant a toolchain predating
+# the 2024 style rules formatted the tree one way and a newer one wanted
+# another - `cargo fmt --check` failed on an unmodified checkout, with the
+# diff landing on import ordering. Stating it makes the intended style a
+# property of the repo instead of whichever toolchain happens to be installed.
+style_edition = "2024"

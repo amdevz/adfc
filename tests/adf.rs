@@ -1,5 +1,5 @@
 use jira_md2adf::markdown_to_adf;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Validate a doc against the vendored ADF draft-04 schema.
 fn assert_valid_adf(doc: &Value) {

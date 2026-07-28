@@ -4,7 +4,7 @@
 //! (<http://go.atlassian.com/adf-json-schema>, vendored in schema/).
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 /// Convert a Markdown string into an ADF document (`{version: 1, type: "doc", ...}`).
 ///
