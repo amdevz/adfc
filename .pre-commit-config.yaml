@@ -30,12 +30,12 @@ repos:
 
   # Local hooks needing cargo, rustfmt, and clippy on PATH.
   #
-  # .envrc is globally gitignored and so is not shipped with the repo. Create
-  # one locally containing `use_dotfiles rust` and run `direnv allow`; that
-  # pulls the toolchain from the dotfiles flake. Any rustup toolchain with the
-  # rustfmt and clippy components works equally well - clippy in particular is
-  # NOT part of a bare cargo install, and its absence is what these hooks fail
-  # on first.
+  # `nix develop` provides all three plus prek itself, and is the reproducible
+  # path (see flake.nix). For direnv, a local `.envrc` containing `use flake`
+  # does the same automatically - .envrc is globally gitignored, so it is not
+  # shipped. Any rustup toolchain carrying the rustfmt and clippy components
+  # works too; clippy in particular is NOT part of a bare cargo install, and
+  # its absence is what these hooks fail on first.
   - repo: local
     hooks:
       - id: cargo-fmt
