@@ -6,10 +6,20 @@
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde_json::{Map, Value, json};
 
+/// URL scheme marking an image as an issue attachment rather than a remote one.
+///
+/// `![alt](attachment:diagram.svg)` becomes a media node whose url is left as
+/// the placeholder; the tool that uploads the file rewrites it to the real
+/// attachment content URL. Keeping the scheme in the emitted document means the
+/// conversion stays a pure function with no network access or site credentials.
+pub const ATTACHMENT_SCHEME: &str = "attachment:";
+
 /// Convert a Markdown string into an ADF document (`{version: 1, type: "doc", ...}`).
 ///
 /// Never fails: unrepresentable constructs degrade rather than error
-/// (images become labeled links, raw HTML is kept as plain text).
+/// (remote images become labeled links, raw HTML is kept as plain text).
+/// Images using the [`ATTACHMENT_SCHEME`] are the exception — they become
+/// real media nodes, since the uploader can resolve them.
 ///
 /// ```
 /// let doc = jira_md2adf::markdown_to_adf("# Title");
@@ -175,6 +185,22 @@ impl Builder {
         }
         node.insert("content".into(), Value::Array(frame.content));
         self.append_block_or_inline(Value::Object(node));
+    }
+
+    /// Append a block-level node, hoisting it past any enclosing paragraph.
+    ///
+    /// ADF paragraphs accept inline content only, so a block emitted while a
+    /// paragraph frame is open (an image, which the parser always reports
+    /// inside one) has to become the paragraph's sibling instead of its child.
+    /// A paragraph left with no content is dropped by `pop`, so an image on its
+    /// own line yields the block alone rather than trailing an empty paragraph.
+    fn append_hoisted_block(&mut self, node: Value) {
+        let idx = self
+            .stack
+            .iter()
+            .rposition(|frame| frame.node_type != "paragraph")
+            .expect("the doc frame is never a paragraph");
+        self.stack[idx].content.push(node);
     }
 
     /// Append a finished node to the current frame, wrapping inline nodes in a
@@ -395,14 +421,34 @@ impl Builder {
                 self.marks.pop();
             }
             TagEnd::Image => {
-                // ADF media nodes need uploaded attachment ids; degrade to a
-                // labeled link so the reference survives.
                 let dest = self.image_dest.take().unwrap_or_default();
-                let label = if self.image_alt.is_empty() {
-                    dest.clone()
-                } else {
-                    std::mem::take(&mut self.image_alt)
-                };
+                let alt = std::mem::take(&mut self.image_alt);
+
+                if dest.starts_with(ATTACHMENT_SCHEME) {
+                    // An `external` media node, not a `file` one: a file node
+                    // additionally requires a media id and collection, which
+                    // Jira's REST API never exposes for an attachment. The url
+                    // stays the `attachment:` placeholder for the apply step to
+                    // rewrite once it has uploaded the file and knows its
+                    // content URL.
+                    let mut attrs = Map::new();
+                    attrs.insert("type".into(), json!("external"));
+                    attrs.insert("url".into(), json!(dest));
+                    if !alt.is_empty() {
+                        attrs.insert("alt".into(), json!(alt));
+                    }
+                    self.append_hoisted_block(json!({
+                        "type": "mediaSingle",
+                        "attrs": {"layout": "center"},
+                        "content": [{"type": "media", "attrs": Value::Object(attrs)}],
+                    }));
+                    return;
+                }
+
+                // Every other scheme: ADF has no way to reference an image we
+                // cannot upload, so degrade to a labeled link and keep the
+                // reference visible.
+                let label = if alt.is_empty() { dest.clone() } else { alt };
                 let mut marks = self.marks.clone();
                 marks.push(json!({"type": "link", "attrs": {"href": dest}}));
                 let node = json!({"type": "text", "text": label, "marks": marks});

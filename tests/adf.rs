@@ -181,6 +181,60 @@ fn image_alt_with_inline_code_keeps_literal_text() {
 }
 
 #[test]
+fn attachment_image_becomes_media_single() {
+    let doc = convert("![](attachment:diagram.svg)");
+    let media_single = &doc["content"][0];
+    assert_eq!(media_single["type"], "mediaSingle");
+    // `layout` is required by mediaSingle_node; the doc-level schema also
+    // pins content to exactly one media child.
+    assert_eq!(media_single["attrs"]["layout"], "center");
+    assert_eq!(media_single["content"].as_array().unwrap().len(), 1);
+
+    let media = &media_single["content"][0];
+    assert_eq!(media["type"], "media");
+    // `external`, not `file`: a file node additionally requires a media id and
+    // collection, which the Jira REST API never exposes. The url stays a
+    // placeholder that the apply step rewrites after uploading.
+    assert_eq!(media["attrs"]["type"], "external");
+    assert_eq!(media["attrs"]["url"], "attachment:diagram.svg");
+}
+
+#[test]
+fn attachment_image_carries_alt_text() {
+    let doc = convert("![Sequence diagram](attachment:diagram.svg)");
+    let media = &doc["content"][0]["content"][0];
+    assert_eq!(media["attrs"]["alt"], "Sequence diagram");
+}
+
+#[test]
+fn attachment_image_without_alt_omits_the_attr() {
+    let doc = convert("![](attachment:diagram.svg)");
+    let media = &doc["content"][0]["content"][0];
+    assert!(media["attrs"].get("alt").is_none());
+}
+
+#[test]
+fn attachment_image_leaves_no_empty_paragraph() {
+    let doc = convert("![](attachment:diagram.svg)");
+    assert_eq!(doc["content"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn attachment_image_is_hoisted_out_of_a_mixed_paragraph() {
+    // ADF paragraphs accept inline content only, so a media block sharing a
+    // paragraph with text becomes a sibling rather than nesting.
+    let doc = convert("before ![](attachment:diagram.svg) after");
+    let types: Vec<&str> = doc["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert!(types.contains(&"mediaSingle"), "got {types:?}");
+    assert!(types.contains(&"paragraph"), "got {types:?}");
+}
+
+#[test]
 fn github_alert_blockquote_becomes_adf_panel() {
     for (marker, panel_type) in [
         ("NOTE", "note"),
