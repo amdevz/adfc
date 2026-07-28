@@ -1,0 +1,68 @@
+# pre-commit configuration (consumed by prek, the Rust drop-in)
+# Schema: https://pre-commit.com/#pre-commit-configyaml---top-level
+# Install: prek install --hook-type pre-commit --hook-type commit-msg
+
+default_stages: [pre-commit]
+fail_fast: false
+
+repos:
+  # General file fixes
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+      # Runs only on changed files, so this validates the vendored ADF schema
+      # exactly when it is re-vendored - the one moment it could arrive
+      # truncated or malformed.
+      - id: check-json
+
+  # Conventional Commits validation
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+
+  # Local hooks needing cargo, rustfmt, and clippy on PATH.
+  #
+  # .envrc is globally gitignored and so is not shipped with the repo. Create
+  # one locally containing `use_dotfiles rust` and run `direnv allow`; that
+  # pulls the toolchain from the dotfiles flake. Any rustup toolchain with the
+  # rustfmt and clippy components works equally well - clippy in particular is
+  # NOT part of a bare cargo install, and its absence is what these hooks fail
+  # on first.
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        # Style rules are pinned in rustfmt.toml (style_edition), so this is
+        # stable across toolchains rather than whatever the local one prefers.
+        entry: cargo fmt --check --
+        language: system
+        types: [rust]
+        pass_filenames: true
+
+      - id: cargo-clippy
+        name: cargo clippy
+        # Pedantic matches how this crate has been linted since its first
+        # commits; --all-targets covers tests as well as the library.
+        entry: cargo clippy --all-targets -- -D warnings -W clippy::pedantic
+        language: system
+        types: [rust]
+        pass_filenames: false
+        require_serial: true
+
+      - id: cargo-test
+        name: cargo test
+        # Cheap here (sub-second) and the suite is the only thing proving the
+        # emitted ADF still validates against the vendored schema.
+        entry: cargo test --quiet
+        language: system
+        types: [rust]
+        pass_filenames: false
+        require_serial: true
