@@ -21,12 +21,26 @@ fn run(args: &[&str], stdin: &str) -> Run {
         .stderr(Stdio::piped())
         .spawn()
         .expect("binary spawns");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin piped")
-        .write_all(stdin.as_bytes())
-        .expect("stdin writes");
+    // Writing stdin is best-effort. Plenty of runs here never read it: clap
+    // rejects a usage error and exits before `read_input` is reached, and a run
+    // given a FILE argument ignores stdin entirely. In both cases the child
+    // closes the pipe and this write gets EPIPE, which means the binary did its
+    // job — not that the test failed.
+    //
+    // Whether the write lands first is a race. A fast machine usually wins it,
+    // which is why this passed locally 40 times and still broke CI; anything
+    // over the 64KB pipe buffer loses it deterministically.
+    let mut stdin_handle = child.stdin.take().expect("stdin piped");
+    if let Err(e) = stdin_handle.write_all(stdin.as_bytes()) {
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "unexpected error writing to child stdin: {e}"
+        );
+    }
+    // Drop to signal EOF to a child that *is* reading stdin.
+    drop(stdin_handle);
+
     let out = child.wait_with_output().expect("child exits");
     Run {
         code: out.status.code().expect("exited via code, not signal"),
@@ -368,4 +382,33 @@ fn e2e_output_is_a_single_compact_json_line() {
     let r = run(&[&fixture("valid.md")], "");
     assert_eq!(r.code, 0);
     assert_eq!(r.stdout.trim_end().lines().count(), 1);
+}
+
+#[test]
+fn usage_error_with_oversized_stdin_does_not_break_the_harness() {
+    // Regression guard for a flaky harness, not for the binary. The child
+    // rejects these arguments and exits without reading stdin; a payload
+    // larger than the 64KB pipe buffer guarantees the write loses the race and
+    // gets EPIPE. Before the fix this panicked here rather than asserting on
+    // the exit code, and it failed only on slower machines.
+    let big = "# Title\n\n".repeat(20_000);
+    let r = run(
+        &[
+            "--no-validate",
+            "--schema",
+            &fixture("reject-all-schema.json"),
+        ],
+        &big,
+    );
+    assert_eq!(r.code, 2, "stderr: {}", r.stderr);
+}
+
+#[test]
+fn file_argument_with_oversized_stdin_does_not_break_the_harness() {
+    // Same race, different cause: with a FILE argument the binary never reads
+    // stdin at all.
+    let big = "# FromStdin\n\n".repeat(20_000);
+    let r = run(&[&fixture("valid.md")], &big);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(!r.stdout.contains("FromStdin"), "stdin leaked into output");
 }
