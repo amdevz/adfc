@@ -3,6 +3,9 @@
 # direnv's generated state, not the committed .envrc itself.
 /.direnv
 
+# `nix build` output symlink.
+/result
+
 # npm package trees generated from release archives; reproducible from a tag.
 # (`dist build` writes its archives under /target, already ignored above.)
 /npm/.output

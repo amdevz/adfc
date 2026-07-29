@@ -2,18 +2,36 @@
 name = "adfc"
 version = "0.1.0"
 edition = "2024"
+# let-chains (src/lib.rs) need 1.88; edition 2024 alone would allow 1.85.
+rust-version = "1.88"
 description = "Convert Markdown to Atlassian Document Format (ADF), with JSON Schema validation"
 license = "MIT"
 repository = "https://github.com/amdevz/adfc"
 homepage = "https://github.com/amdevz/adfc"
 keywords = ["adf", "atlassian", "markdown", "confluence", "jira"]
 categories = ["command-line-utilities", "text-processing"]
+# Development and distribution machinery is irrelevant to anyone installing the
+# binary or depending on the library, and shipping it puts the npm packaging in
+# the crate tarball.
+exclude = [
+  ".github/",
+  "npm/",
+  "scripts/",
+  "dist-workspace.toml",
+  "flake.nix",
+  "flake.lock",
+  "justfile",
+  "rustfmt.toml",
+  ".envrc",
+  ".pre-commit-config.yaml",
+]
 
 [dependencies]
 pulldown-cmark = { version = "0.13", default-features = false, features = ["simd"] }
 serde_json = "1"
 jsonschema = { version = "0.26", default-features = false }
 thiserror = "2"
+
 # CLI-only. [dependencies] applies to both targets, so without the feature gate
 # every library consumer would compile clap for code they cannot reach.
 anyhow = { version = "1", optional = true }
