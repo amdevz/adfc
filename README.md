@@ -12,19 +12,28 @@ Markdown in, schema-valid ADF out, no network access, single static binary.
 ## Usage
 
 ```sh
-adfc < ticket-body.md > description.json
+adfc ticket-body.md -o description.json
 
-# Validate the output against the official ADF JSON Schema before printing
-adfc --schema schema/adf-schema.json < ticket-body.md
+# Files are optional on both ends: stdin and stdout are the defaults
+adfc ticket-body.md > description.json
+cat ticket-body.md | adfc | jq .
 ```
 
-- Markdown on stdin, compact ADF JSON (`{"version":1,"type":"doc",...}`) on
-  stdout.
-- `--schema <file>`: validate the emitted document against an ADF JSON
-  Schema (draft-04). Violations are printed to stderr and the process exits
-  non-zero, so malformed documents fail locally instead of at the Atlassian
-  API.
+- Markdown in (a `FILE` argument, or stdin), compact ADF JSON
+  (`{"version":1,"type":"doc",...}`) out (`-o FILE`, or stdout).
+- **Output is validated against the ADF schema by default.** The schema is
+  compiled into the binary, so this works with no checkout present. Violations
+  are printed to stderr and the process exits non-zero **without writing any
+  output**, so a malformed document fails locally instead of at the Atlassian
+  API — and never reaches a downstream consumer.
+- `--no-validate`: skip validation.
+- `--schema <file>`: validate against a different schema revision than the
+  embedded one. Conflicts with `--no-validate`.
 - `--version` / `--help`.
+
+Exit codes: `0` success (including a downstream pipe closing early), `1`
+runtime failure (unreadable input, unwritable output, schema violation), `2`
+usage error.
 
 ## Supported Markdown
 
