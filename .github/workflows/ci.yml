@@ -6,26 +6,36 @@ on:
   pull_request:
 
 jobs:
+  # Runs inside the flake's devShell so CI and a local checkout use the same
+  # rustc, rustfmt and clippy, pinned by flake.lock. The alternative,
+  # dtolnay/rust-toolchain@stable, floats: this repo already lost a day to that
+  # when a newer toolchain's 2024 style rules disagreed with an older one and
+  # `cargo fmt --check` failed on an unmodified tree (see rustfmt.toml).
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: cachix/install-nix-action@v30
         with:
-          components: rustfmt, clippy
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # Caches ~/.cargo and target/ across runs. Nix supplies the toolchain;
+      # this keeps the crate builds themselves incremental.
       - uses: Swatinem/rust-cache@v2
       - name: Format check
-        run: cargo fmt --check
+        run: nix develop --command cargo fmt --check
       # Mirrors the cargo-clippy hook in .pre-commit-config.yaml exactly. When
       # the two drift, CI becomes the weaker gate and merges code the local
       # hook would have rejected.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings -W clippy::pedantic
+        run: nix develop --command cargo clippy --all-targets -- -D warnings -W clippy::pedantic
       - name: Tests
-        run: cargo test
+        run: nix develop --command cargo test
 
   # Separate job so an advisory against a dependency is distinguishable at a
   # glance from a code failure, and so it still runs when the test job fails.
+  # Left on rustsec/audit-check rather than the devShell: the action annotates
+  # advisories inline on the PR, which a bare `cargo audit` run cannot do.
   audit:
     runs-on: ubuntu-latest
     steps:
