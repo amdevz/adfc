@@ -173,6 +173,14 @@ fn image_degrades_to_link() {
 }
 
 #[test]
+fn image_alt_with_inline_code_keeps_literal_text() {
+    let doc = convert("![see `config.rs`](https://x.com/i.png)");
+    let inline = &doc["content"][0]["content"][0];
+    assert_eq!(inline["text"], "see config.rs");
+    assert_eq!(inline["marks"][0]["type"], "link");
+}
+
+#[test]
 fn empty_input_yields_empty_doc() {
     let doc = convert("");
     assert_eq!(doc["content"].as_array().unwrap().len(), 0);

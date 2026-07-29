@@ -7,6 +7,15 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 use serde_json::{json, Map, Value};
 
 /// Convert a Markdown string into an ADF document (`{version: 1, type: "doc", ...}`).
+///
+/// Never fails: unrepresentable constructs degrade rather than error
+/// (images become labeled links, raw HTML is kept as plain text).
+///
+/// ```
+/// let doc = jira_md2adf::markdown_to_adf("# Title");
+/// assert_eq!(doc["content"][0]["type"], "heading");
+/// assert_eq!(doc["content"][0]["attrs"]["level"], 1);
+/// ```
 pub fn markdown_to_adf(markdown: &str) -> Value {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     let parser = Parser::new_ext(markdown, options);
@@ -127,6 +136,12 @@ impl Builder {
             Event::End(tag) => self.end(tag),
             Event::Text(t) => self.text(&t),
             Event::Code(t) => {
+                // Inline code inside image alt text contributes its literal
+                // text to the accumulating label, like any other text run.
+                if self.image_dest.is_some() {
+                    self.image_alt.push_str(&t);
+                    return;
+                }
                 let mut marks = self.marks.clone();
                 marks.push(json!({"type": "code"}));
                 let node = json!({"type": "text", "text": t.as_ref(), "marks": marks});
