@@ -49,6 +49,8 @@
           rustfmt
           clippy
           rust-analyzer
+          cargo-audit # `just audit`, and the CI advisory check
+          just # task entry points; see the justfile
           jq # the test harness and the CLI's own usage shell out to it
           prek # runs .pre-commit-config.yaml
         ];
