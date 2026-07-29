@@ -50,7 +50,14 @@
           clippy
           rust-analyzer
           cargo-audit # `just audit`, and the CI advisory check
+          cargo-dist # builds the release archives the npm packages wrap
           just # task entry points; see the justfile
+          nodejs # the npm bin shim and the packaging script
+          # The packaging script shells out to unzip for the Windows archives
+          # and tar for the rest; zip is what its tests build fixtures with.
+          # Listed explicitly rather than relied on from stdenv.
+          unzip
+          zip
           jq # the test harness and the CLI's own usage shell out to it
           prek # runs .pre-commit-config.yaml
         ];
