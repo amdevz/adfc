@@ -1,15 +1,34 @@
 //! adfc - Markdown on stdin, ADF JSON on stdout.
 //!
-//! With --schema <file>, the output is validated against that ADF JSON
-//! Schema before printing; violations go to stderr and exit non-zero.
+//! Output is validated against the embedded ADF JSON Schema before printing;
+//! violations go to stderr and exit non-zero, and nothing is written. Pass
+//! --no-validate to skip, or --schema <file> to check against a different
+//! schema revision than the embedded one.
 
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: adfc [--schema <adf-schema.json>] < input.md > output.json";
+const USAGE: &str = "\
+usage: adfc [--no-validate | --schema <adf-schema.json>] < input.md > output.json
+
+Converts Markdown on stdin to Atlassian Document Format JSON on stdout.
+The emitted document is validated against the embedded ADF schema by default.
+
+Options:
+      --no-validate    skip schema validation
+      --schema <FILE>  validate against this schema instead of the embedded one
+  -h, --help
+  -V, --version";
+
+/// Runtime failure: I/O, an unusable schema, or a document that violates one.
+const FAILURE: ExitCode = ExitCode::FAILURE;
+/// Usage error: an argument the CLI cannot act on.
+const USAGE_ERROR: u8 = 2;
 
 fn main() -> ExitCode {
     let mut schema_path: Option<String> = None;
+    let mut no_validate = false;
+
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -18,9 +37,10 @@ fn main() -> ExitCode {
                     schema_path = Some(path);
                 } else {
                     eprintln!("adfc: --schema requires a path\n{USAGE}");
-                    return ExitCode::from(2);
+                    return ExitCode::from(USAGE_ERROR);
                 }
             }
+            "--no-validate" => no_validate = true,
             "--help" | "-h" => {
                 println!("{USAGE}");
                 return ExitCode::SUCCESS;
@@ -31,47 +51,43 @@ fn main() -> ExitCode {
             }
             other => {
                 eprintln!("adfc: unknown argument: {other}\n{USAGE}");
-                return ExitCode::from(2);
+                return ExitCode::from(USAGE_ERROR);
             }
         }
+    }
+
+    // Supplying a schema and then declining to use it is self-contradictory.
+    // Rejected outright rather than given a silent precedence rule, so a
+    // scripted invocation cannot quietly skip the check it asked for.
+    if no_validate && schema_path.is_some() {
+        eprintln!("adfc: --no-validate conflicts with --schema\n{USAGE}");
+        return ExitCode::from(USAGE_ERROR);
     }
 
     let mut markdown = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut markdown) {
         eprintln!("adfc: failed to read stdin: {e}");
-        return ExitCode::FAILURE;
+        return FAILURE;
     }
 
     let doc = adfc::markdown_to_adf(&markdown);
 
-    if let Some(path) = schema_path {
-        let schema: serde_json::Value = match std::fs::read_to_string(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
-        {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("adfc: cannot load schema {path}: {e}");
-                return ExitCode::FAILURE;
-            }
+    // Validate before writing a single byte: a document that fails the schema
+    // must not reach stdout, or a downstream consumer would ship it anyway.
+    if !no_validate {
+        let result: Result<(), String> = match schema_path {
+            Some(path) => match load_schema(&path) {
+                Ok(schema) => adfc::validate_against(&schema, &doc).map_err(|e| format!("{e}")),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return FAILURE;
+                }
+            },
+            None => adfc::validate(&doc).map_err(|e| format!("{e}")),
         };
-        let validator = match jsonschema::validator_for(&schema) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("adfc: invalid schema {path}: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
-        let errors: Vec<String> = validator
-            .iter_errors(&doc)
-            .map(|e| format!("  {} at {}", e, e.instance_path))
-            .collect();
-        if !errors.is_empty() {
-            eprintln!(
-                "adfc: output failed ADF schema validation:\n{}",
-                errors.join("\n")
-            );
-            return ExitCode::FAILURE;
+        if let Err(report) = result {
+            eprintln!("adfc: output failed ADF schema validation:\n{report}");
+            return FAILURE;
         }
     }
 
@@ -82,7 +98,17 @@ fn main() -> ExitCode {
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("adfc: failed to write output: {e}");
-            ExitCode::FAILURE
+            FAILURE
         }
     }
+}
+
+/// Read the schema named by `--schema`.
+///
+/// Errors name the path, since the whole point of the flag is pointing at a
+/// file the user chose and a bare parse error would not say which.
+fn load_schema(path: &str) -> Result<serde_json::Value, String> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| format!("adfc: cannot read schema {path}: {e}"))?;
+    serde_json::from_str(&source).map_err(|e| format!("adfc: cannot parse schema {path}: {e}"))
 }
