@@ -9,6 +9,14 @@ ADF appears.
 Built for pipelines that treat Atlassian documents as rendered artifacts:
 Markdown in, schema-valid ADF out, no network access, single static binary.
 
+## Install
+
+```sh
+cargo install --path .   # from a clone
+```
+
+Prebuilt binaries and `npx adfc` arrive with the first tagged release.
+
 ## Usage
 
 ```sh
@@ -86,57 +94,25 @@ Other degradations (ADF has no lossless equivalent):
 
 ## Schema
 
-`schema/adf-schema.json` is the official Atlassian ADF JSON Schema, vendored
-from <http://go.atlassian.com/adf-json-schema>. Every integration test
-validates its output against it; `--schema` applies the same check at
-runtime. To refresh:
+The official Atlassian ADF JSON Schema is vendored from
+<http://go.atlassian.com/adf-json-schema> and compiled into the binary, which
+is why validation needs no files on disk. `--schema` swaps in a different
+revision without rebuilding, for testing against a newer one than the release
+carries.
+
+## Contributing
+
+The toolchain is pinned in `flake.lock`, so a clone plus
+[nix](https://nixos.org/download/) is the whole setup:
 
 ```sh
-curl -sSL http://go.atlassian.com/adf-json-schema > schema/adf-schema.json
+direnv allow    # or: nix develop
+just check      # format, lint, and both test suites
 ```
 
-## Development
-
-The toolchain is pinned in `flake.lock`, so every contributor and CI build
-with the same `rustc`, `rustfmt`, `clippy`, `just` and `prek`. There is
-nothing to install beyond [nix](https://nixos.org/download/) with flakes
-enabled.
-
-```sh
-git clone https://github.com/amdevz/adfc && cd adfc
-
-direnv allow          # if you use direnv: the shell loads on entry
-nix develop           # otherwise: enter the shell explicitly
-
-just                  # list the available recipes
-just check            # fmt-check + lint + test — the same gate CI runs
-just install-hooks    # run those gates automatically on commit
-```
-
-| Recipe | Does |
-| ------ | ---- |
-| `just check` | Everything CI runs; the gate before pushing |
-| `just test` | Test suite |
-| `just lint` | clippy at pedantic, warnings denied |
-| `just format` / `just fmt-check` | Format in place / fail if unformatted |
-| `just build` | Release binary at `target/release/adfc` |
-| `just audit` | Dependencies against the RustSec advisory database |
-| `just hooks` | Full pre-commit suite, including file-hygiene hooks |
-| `just run FILE` | Convert a file and pretty-print the ADF |
-
-CI invokes these same recipes inside the same devShell, so a green `just
-check` locally and a green CI run mean the same thing.
-
-Without nix, any Rust toolchain carrying the `rustfmt` and `clippy`
-components works — note that `clippy` is not part of a bare `cargo` install,
-and its absence is what the hooks fail on first. You lose the version pinning
-that keeps `cargo fmt --check` stable across machines.
-
-To install the binary: `cargo install --path .`
-
-No runtime dependencies; the release profile builds a stripped, LTO'd
-binary.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the recipes, testing conventions and
+release process.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

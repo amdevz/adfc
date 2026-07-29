@@ -1,0 +1,127 @@
+# Contributing to adfc
+
+Thanks for taking a look. This document covers the development environment, the
+checks that gate a change, and the conventions the repository follows.
+
+## Development environment
+
+The toolchain is pinned in `flake.lock`, so every contributor and every CI run
+build with the same `rustc`, `rustfmt`, `clippy`, `just`, `node` and `prek`.
+Install [nix](https://nixos.org/download/) with flakes enabled and there is
+nothing else to set up.
+
+```sh
+git clone https://github.com/amdevz/adfc && cd adfc
+
+direnv allow          # if you use direnv: the shell loads on entry
+nix develop           # otherwise: enter the shell explicitly
+
+just                  # list the available recipes
+just check            # the gate: format, lint, and both test suites
+just install-hooks    # run those gates automatically on commit
+```
+
+### Without nix
+
+Any Rust toolchain carrying the `rustfmt` and `clippy` components works, plus
+Node 18 or newer for the packaging tests. Note that `clippy` is **not** part of
+a bare `cargo` install, and its absence is what the hooks fail on first.
+
+You give up the version pinning that keeps `cargo fmt --check` stable across
+machines: rustfmt's style rules follow its `style_edition`, and a toolchain
+predating the 2024 rules formats the tree differently from a newer one.
+`rustfmt.toml` pins the style edition to limit the damage, but matching
+toolchains is the real fix.
+
+## Recipes
+
+| Recipe | Does |
+| ------ | ---- |
+| `just check` | Everything CI runs; the gate before pushing |
+| `just test` | Rust test suite |
+| `just test-node` | npm shim and packaging tests |
+| `just lint` | clippy at pedantic, warnings denied |
+| `just format` / `just fmt-check` | Format in place / fail if unformatted |
+| `just build` | Release binary at `target/release/adfc` |
+| `just audit` | Dependencies against the RustSec advisory database |
+| `just hooks` | Full pre-commit suite, including file-hygiene hooks |
+| `just run FILE` | Convert a file and pretty-print the ADF |
+| `just dist-plan` | Show what a release would produce |
+| `just npm-e2e` | Pack, install and run the npm distribution locally |
+
+CI invokes these same recipes inside the same devShell, so a green `just check`
+locally and a green CI run mean the same thing. The recipe is the single
+definition of each gate: the pre-commit hooks call them too, so nothing can
+drift between what you run and what gates the merge.
+
+## Tests
+
+- **Rust unit tests** live in `#[cfg(test)] mod tests` beside the code.
+- **Rust integration tests** live in `tests/`. `tests/adf.rs` covers conversion
+  and validates every emitted document against the vendored schema;
+  `tests/cli.rs` drives the real binary through `CARGO_BIN_EXE_adfc`.
+- **Node tests** use the built-in `node:test` runner, so there is no
+  `package.json`, no lockfile and no `node_modules` in this repository.
+
+Write the test first and watch it fail before making it pass. A test that
+passes the moment you write it is not yet telling you anything.
+
+Some paths cannot be reached through normal input — the converter never emits
+invalid ADF, for instance — so `tests/fixtures/` holds a deliberately
+restrictive schema and a deliberately malformed one to drive those branches.
+Do not add production flags whose only purpose is to make a test easier.
+
+## Conventions
+
+**Commits** follow [Conventional Commits](https://www.conventionalcommits.org/):
+`type(scope): description`, with types `feat`, `fix`, `docs`, `style`,
+`refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. Scopes are
+component or conceptual names (`adf`, `cli`, `npm`), never issue numbers. The
+`commit-msg` hook enforces the format.
+
+Keep each commit a single coherent change that builds and passes its tests on
+its own, so the history stays bisectable.
+
+**Comments** explain why, not what. Prefer stating the constraint or the
+failure a piece of code prevents over describing what the next line does, and
+keep them self-contained — a reader has no access to the discussion that
+produced them.
+
+**Errors** use `thiserror` in the library and `anyhow` with `.context()` in the
+binary. `unwrap()` and `expect()` are for tests and static initialisers only.
+
+## Distribution
+
+Releases are cut from tags. `cargo-dist` builds six targets, and
+`scripts/build-npm-packages.js` turns those archives into seven npm packages:
+one entry package plus six platform packages listed in `optionalDependencies`.
+
+The binary ships **inside** each platform tarball rather than being downloaded
+during install. That is what keeps `npm ci --ignore-scripts`, offline caches
+and mirrored registries working, and it is why the packaging is hand-rolled
+rather than using dist's own npm installer.
+
+`scripts/platforms.js` is the single mapping from Rust target to npm package.
+The build script generates manifests from it and serialises the runtime subset
+into the entry package, so the shim and the packaging cannot disagree.
+
+`.github/workflows/release.yml` is generated by `dist`. Do not edit it by hand;
+change `dist-workspace.toml` and run `dist generate`.
+
+## Refreshing the ADF schema
+
+`schema/adf-schema.json` is vendored from Atlassian and compiled into the
+binary. To update it:
+
+```sh
+curl -sSL http://go.atlassian.com/adf-json-schema > schema/adf-schema.json
+just check
+```
+
+The test suite validates every emitted document against it, so a schema that
+disagrees with the converter fails immediately.
+
+## Opening a pull request
+
+Run `just check` first. Describe what changed and why it changed; if you made a
+tradeoff, say so rather than leaving it to be discovered in review.
