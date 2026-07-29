@@ -1,7 +1,7 @@
 //! Markdown -> Atlassian Document Format (ADF) conversion.
 //!
 //! The emitted document targets the official ADF JSON Schema
-//! (http://go.atlassian.com/adf-json-schema, vendored in schema/).
+//! (<http://go.atlassian.com/adf-json-schema>, vendored in schema/).
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde_json::{json, Map, Value};
@@ -16,6 +16,7 @@ use serde_json::{json, Map, Value};
 /// assert_eq!(doc["content"][0]["type"], "heading");
 /// assert_eq!(doc["content"][0]["attrs"]["level"], 1);
 /// ```
+#[must_use]
 pub fn markdown_to_adf(markdown: &str) -> Value {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     let parser = Parser::new_ext(markdown, options);
@@ -92,7 +93,7 @@ impl Builder {
     fn append_block_or_inline(&mut self, node: Value) {
         let is_inline = matches!(
             node["type"].as_str(),
-            Some("text") | Some("hardBreak") | Some("emoji") | Some("mention")
+            Some("text" | "hardBreak" | "emoji" | "mention")
         );
         let frame = self.stack.last_mut().expect("non-empty stack");
         if is_inline && frame.wraps_inline {
@@ -134,7 +135,9 @@ impl Builder {
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
-            Event::Text(t) => self.text(&t),
+            // Math extensions are not enabled, but if they ever are, the raw
+            // expression text degrades to plain text like any other run.
+            Event::Text(t) | Event::InlineMath(t) | Event::DisplayMath(t) => self.text(&t),
             Event::Code(t) => {
                 // Inline code inside image alt text contributes its literal
                 // text to the accumulating label, like any other text run.
@@ -156,7 +159,6 @@ impl Builder {
             // Raw HTML has no ADF equivalent; keep it visible as plain text.
             Event::Html(t) | Event::InlineHtml(t) => self.text(t.trim_end_matches('\n')),
             Event::FootnoteReference(_) | Event::TaskListMarker(_) => {}
-            Event::InlineMath(t) | Event::DisplayMath(t) => self.text(&t),
         }
     }
 
@@ -165,7 +167,7 @@ impl Builder {
             Tag::Paragraph => self.push("paragraph", None, false),
             Tag::Heading { level, .. } => {
                 let level = heading_level(level);
-                self.push("heading", Some(json!({ "level": level })), false)
+                self.push("heading", Some(json!({ "level": level })), false);
             }
             Tag::BlockQuote(_) => self.push("blockquote", None, true),
             Tag::CodeBlock(kind) => {
@@ -175,17 +177,17 @@ impl Builder {
                     }
                     _ => None,
                 };
-                self.push("codeBlock", attrs, false)
+                self.push("codeBlock", attrs, false);
             }
             Tag::List(Some(start)) => {
-                self.push("orderedList", Some(json!({ "order": start })), false)
+                self.push("orderedList", Some(json!({ "order": start })), false);
             }
             Tag::List(None) => self.push("bulletList", None, false),
             Tag::Item => self.push("listItem", None, true),
             Tag::Table(_) => self.push("table", None, false),
             Tag::TableHead => {
                 self.in_table_head = true;
-                self.push("tableRow", None, false)
+                self.push("tableRow", None, false);
             }
             Tag::TableRow => self.push("tableRow", None, false),
             Tag::TableCell => {
@@ -194,7 +196,7 @@ impl Builder {
                 } else {
                     "tableCell"
                 };
-                self.push(cell, None, true)
+                self.push(cell, None, true);
             }
             Tag::Emphasis => self.marks.push(json!({"type": "em"})),
             Tag::Strong => self.marks.push(json!({"type": "strong"})),
@@ -240,11 +242,11 @@ impl Builder {
                 if !merged.is_empty() {
                     frame.content.push(json!({"type": "text", "text": merged}));
                 }
-                self.pop()
+                self.pop();
             }
             TagEnd::TableHead => {
                 self.in_table_head = false;
-                self.pop()
+                self.pop();
             }
             TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
                 self.marks.pop();

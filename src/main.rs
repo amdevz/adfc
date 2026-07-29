@@ -3,7 +3,7 @@
 //! With --schema <file>, the output is validated against that ADF JSON
 //! Schema before printing; violations go to stderr and exit non-zero.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: jira-md2adf [--schema <adf-schema.json>] < input.md > output.json";
@@ -13,13 +13,14 @@ fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--schema" => match args.next() {
-                Some(path) => schema_path = Some(path),
-                None => {
+            "--schema" => {
+                if let Some(path) = args.next() {
+                    schema_path = Some(path);
+                } else {
                     eprintln!("jira-md2adf: --schema requires a path\n{USAGE}");
                     return ExitCode::from(2);
                 }
-            },
+            }
             "--help" | "-h" => {
                 println!("{USAGE}");
                 return ExitCode::SUCCESS;
@@ -74,6 +75,14 @@ fn main() -> ExitCode {
         }
     }
 
-    println!("{doc}");
-    ExitCode::SUCCESS
+    // Write directly (not println!) so a downstream consumer closing the
+    // pipe early — `jira-md2adf | head` — is a quiet success, not a panic.
+    match writeln!(std::io::stdout(), "{doc}") {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("jira-md2adf: failed to write output: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
