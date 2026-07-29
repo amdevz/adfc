@@ -123,5 +123,6 @@ disagrees with the converter fails immediately.
 
 ## Opening a pull request
 
-Run `just check` first. Describe what changed and why it changed; if you made a
+Run `just check` first. Add a line to `CHANGELOG.md` under *Unreleased* if the
+change is user-visible; release notes are generated from it. Describe what changed and why it changed; if you made a
 tradeoff, say so rather than leaving it to be discovered in review.
