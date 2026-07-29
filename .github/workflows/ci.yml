@@ -16,7 +16,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format check
         run: cargo fmt --check
+      # Mirrors the cargo-clippy hook in .pre-commit-config.yaml exactly. When
+      # the two drift, CI becomes the weaker gate and merges code the local
+      # hook would have rejected.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings -W clippy::pedantic
       - name: Tests
         run: cargo test
+
+  # Separate job so an advisory against a dependency is distinguishable at a
+  # glance from a code failure, and so it still runs when the test job fails.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
