@@ -10,11 +10,15 @@ default:
     @just --list
 
 # Run everything CI runs; the gate before pushing.
-check: fmt-check lint test
+check: fmt-check lint test test-node
 
-# Run the test suite.
+# Run the Rust test suite.
 test:
     cargo test
+
+# Run the npm shim and packaging tests.
+test-node:
+    node --test "npm/test/**/*.test.js" "scripts/test/**/*.test.js"
 
 # Lint with clippy at pedantic, warnings denied.
 lint:
@@ -47,3 +51,20 @@ install-hooks:
 # Convert a Markdown file and pretty-print the ADF, to eyeball output.
 run FILE:
     cargo run --quiet -- {{FILE}} | jq .
+
+# Show what a release would produce, without building it.
+dist-plan:
+    dist plan
+
+# Build release archives for every target. Needs cross-compilation toolchains;
+# in practice this runs on CI, where dist provides them.
+dist-build:
+    dist build
+
+# Generate the seven npm package trees from already-built release archives.
+npm-packages PLAN="target/distrib/dist-manifest.json":
+    node scripts/build-npm-packages.js --plan {{PLAN}}
+
+# Pack, install and run the npm distribution locally, with no registry.
+npm-e2e:
+    ./scripts/npm-e2e.sh

@@ -69,3 +69,13 @@ repos:
         types: [rust]
         pass_filenames: false
         require_serial: true
+
+      - id: test-node
+        name: just test-node
+        # The Rust hooks are gated on `types: [rust]`, so without this the
+        # shim and packaging script would be committed ungated.
+        entry: just test-node
+        language: system
+        files: \.(js|cjs|mjs)$
+        pass_filenames: false
+        require_serial: true
