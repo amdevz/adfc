@@ -20,6 +20,10 @@ repos:
       # exactly when it is re-vendored - the one moment it could arrive
       # truncated or malformed.
       - id: check-json
+        # tests/fixtures/malformed-schema.json is invalid on purpose: it is
+        # what drives the CLI's "cannot parse schema" path, so a hook that
+        # insists it parse would delete the test's reason for existing.
+        exclude: ^tests/fixtures/malformed-schema\.json$
 
   # Conventional Commits validation
   - repo: https://github.com/compilerla/conventional-pre-commit
