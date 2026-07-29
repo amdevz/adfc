@@ -22,15 +22,15 @@ jobs:
       # Caches ~/.cargo and target/ across runs. Nix supplies the toolchain;
       # this keeps the crate builds themselves incremental.
       - uses: Swatinem/rust-cache@v2
+      # The same recipes a developer runs. Kept as separate steps rather than a
+      # single `just check` so a failure names the gate that broke it in the
+      # job summary; the recipes themselves are the single definition.
       - name: Format check
-        run: nix develop --command cargo fmt --check
-      # Mirrors the cargo-clippy hook in .pre-commit-config.yaml exactly. When
-      # the two drift, CI becomes the weaker gate and merges code the local
-      # hook would have rejected.
-      - name: Clippy
-        run: nix develop --command cargo clippy --all-targets -- -D warnings -W clippy::pedantic
+        run: nix develop --command just fmt-check
+      - name: Lint
+        run: nix develop --command just lint
       - name: Tests
-        run: nix develop --command cargo test
+        run: nix develop --command just test
 
   # Separate job so an advisory against a dependency is distinguishable at a
   # glance from a code failure, and so it still runs when the test job fails.
