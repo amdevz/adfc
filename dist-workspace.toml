@@ -1,0 +1,27 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+cargo-dist-version = "0.32.0"
+# .tar.xz is the dist default; .tar.gz is what the npm packaging script and
+# every other consumer expects without extra tooling.
+unix-archive = ".tar.gz"
+ci = "github"
+# No installers: npm packaging is hand-rolled in scripts/build-npm-packages.mjs
+# because dist's own npm installer downloads the binary from GitHub Releases
+# during `npm install`, which breaks under `npm ci --ignore-scripts`, offline
+# caches, and mirrored registries. Shell, PowerShell and Homebrew installers
+# are out of scope for this project.
+installers = []
+# Building release artifacts on every pull request would add minutes to a check
+# that gates nothing; releases are cut from tags.
+pr-run-mode = "skip"
+targets = [
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+]
