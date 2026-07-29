@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Superseded runs on the same ref are pointless once a newer commit exists.
+# main is excluded: post-merge runs are the record of whether that commit is
+# good, so cancelling them would leave gaps in that history.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   # Runs inside the flake's devShell so CI and a local checkout use the same
   # rustc, rustfmt and clippy, pinned by flake.lock. The alternative,
