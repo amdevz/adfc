@@ -32,40 +32,39 @@ repos:
       - id: conventional-pre-commit
         stages: [commit-msg]
 
-  # Local hooks needing cargo, rustfmt, and clippy on PATH.
+  # Local hooks. These delegate to justfile recipes rather than spelling out
+  # cargo invocations, so the hook, `just check` and CI cannot drift apart: the
+  # recipe is the single definition of what each gate means.
   #
-  # `nix develop` provides all three plus prek itself, and is the reproducible
-  # path (see flake.nix). For direnv, a local `.envrc` containing `use flake`
-  # does the same automatically - .envrc is globally gitignored, so it is not
-  # shipped. Any rustup toolchain carrying the rustfmt and clippy components
-  # works too; clippy in particular is NOT part of a bare cargo install, and
-  # its absence is what these hooks fail on first.
+  # They need the devShell on PATH. The committed .envrc loads it via direnv on
+  # entry; `nix develop` does the same without direnv. Everything comes from
+  # flake.lock, so every contributor and CI run the identical toolchain.
   - repo: local
     hooks:
-      - id: cargo-fmt
-        name: cargo fmt
+      - id: fmt-check
+        name: just fmt-check
         # Style rules are pinned in rustfmt.toml (style_edition), so this is
         # stable across toolchains rather than whatever the local one prefers.
-        entry: cargo fmt --check --
+        entry: just fmt-check
         language: system
         types: [rust]
-        pass_filenames: true
+        pass_filenames: false
 
-      - id: cargo-clippy
-        name: cargo clippy
+      - id: lint
+        name: just lint
         # Pedantic matches how this crate has been linted since its first
         # commits; --all-targets covers tests as well as the library.
-        entry: cargo clippy --all-targets -- -D warnings -W clippy::pedantic
+        entry: just lint
         language: system
         types: [rust]
         pass_filenames: false
         require_serial: true
 
-      - id: cargo-test
-        name: cargo test
+      - id: test
+        name: just test
         # Cheap here (sub-second) and the suite is the only thing proving the
         # emitted ADF still validates against the vendored schema.
-        entry: cargo test --quiet
+        entry: just test
         language: system
         types: [rust]
         pass_filenames: false
