@@ -5,12 +5,10 @@
 # script, packs the two tarballs npm would publish, installs them into a
 # throwaway prefix, and runs the result.
 #
-# Scope note: the devShell's rustc has no musl standard library, and adding a
-# rust overlay to get one was rejected as an unnecessary flake input. So the
-# binary packaged here is the host build wearing the musl archive's name. That
-# exercises everything this phase owns — extraction, manifest generation,
-# resolution, exec — but not the musl cross-compilation itself, which dist
-# performs on CI runners and which the release pipeline verifies.
+# Scope: the devShell ships no musl standard library, so the binary packaged
+# here is the host build wearing the musl archive's name. That covers
+# extraction, manifest generation, resolution and exec; the cross-compilation
+# itself is dist's job on CI runners and is verified by the release pipeline.
 
 set -euo pipefail
 

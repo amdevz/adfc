@@ -27,9 +27,9 @@ fn run(args: &[&str], stdin: &str) -> Run {
     // closes the pipe and this write gets EPIPE, which means the binary did its
     // job — not that the test failed.
     //
-    // Whether the write lands first is a race. A fast machine usually wins it,
-    // which is why this passed locally 40 times and still broke CI; anything
-    // over the 64KB pipe buffer loses it deterministically.
+    // Whether the write lands before the child exits is a race, and a fast
+    // machine usually wins it. Anything larger than the 64KB pipe buffer
+    // loses it every time.
     let mut stdin_handle = child.stdin.take().expect("stdin piped");
     if let Err(e) = stdin_handle.write_all(stdin.as_bytes()) {
         assert_eq!(
@@ -165,8 +165,8 @@ fn no_validate_with_schema_is_a_usage_error() {
         "# Title\n",
     );
     assert_eq!(r.code, 2, "stderr: {}", r.stderr);
-    // Must be rejected as a conflict, not as an unrecognised flag: before
-    // --no-validate existed this exited 2 for the wrong reason.
+    // Must be rejected as a conflict rather than as an unrecognised flag;
+    // both exit 2, so only the message distinguishes them.
     assert!(
         !r.stderr.contains("unknown argument"),
         "rejected as unknown rather than conflicting: {}",
@@ -327,8 +327,8 @@ fn non_utf8_input_file_exits_1() {
 
 #[test]
 fn broken_pipe_exits_zero() {
-    // `adfc big.md | head` must be a quiet success, not a panic. This passed
-    // before clap; it is kept as a regression guard through the refactor.
+    // `adfc big.md | head` must be a quiet success, not a panic. Guards the
+    // write path, where a simplification to println! would reintroduce it.
     use std::process::Command;
     let mut child = Command::new(env!("CARGO_BIN_EXE_adfc"))
         .arg(fixture("valid.md"))
@@ -386,11 +386,9 @@ fn e2e_output_is_a_single_compact_json_line() {
 
 #[test]
 fn usage_error_with_oversized_stdin_does_not_break_the_harness() {
-    // Regression guard for a flaky harness, not for the binary. The child
-    // rejects these arguments and exits without reading stdin; a payload
-    // larger than the 64KB pipe buffer guarantees the write loses the race and
-    // gets EPIPE. Before the fix this panicked here rather than asserting on
-    // the exit code, and it failed only on slower machines.
+    // Guards the harness, not the binary. The child rejects these arguments
+    // and exits without reading stdin, so a payload larger than the pipe
+    // buffer guarantees the write gets EPIPE.
     let big = "# Title\n\n".repeat(20_000);
     let r = run(
         &[
@@ -405,8 +403,8 @@ fn usage_error_with_oversized_stdin_does_not_break_the_harness() {
 
 #[test]
 fn file_argument_with_oversized_stdin_does_not_break_the_harness() {
-    // Same race, different cause: with a FILE argument the binary never reads
-    // stdin at all.
+    // Same race, different cause: given a FILE argument the binary never
+    // reads stdin at all.
     let big = "# FromStdin\n\n".repeat(20_000);
     let r = run(&[&fixture("valid.md")], &big);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
