@@ -2,20 +2,18 @@ use adfc::markdown_to_adf;
 use serde_json::{Value, json};
 
 /// Validate a doc against the vendored ADF draft-04 schema.
+///
+/// Delegates to the library's own validator rather than compiling a second
+/// one here: the shared validator is cached, so the whole suite pays the ~15ms
+/// schema compile once instead of once per assertion, and these tests exercise
+/// the same public API the CLI uses.
 fn assert_valid_adf(doc: &Value) {
-    let schema: Value =
-        serde_json::from_str(include_str!("../schema/adf-schema.json")).expect("schema parses");
-    let validator = jsonschema::validator_for(&schema).expect("schema compiles");
-    let errors: Vec<String> = validator
-        .iter_errors(doc)
-        .map(|e| format!("{} at {}", e, e.instance_path))
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "ADF schema violations:\n{}\ndoc: {}",
-        errors.join("\n"),
-        serde_json::to_string_pretty(doc).unwrap()
-    );
+    if let Err(violations) = adfc::validate(doc) {
+        panic!(
+            "ADF schema violations:\n{violations}\ndoc: {}",
+            serde_json::to_string_pretty(doc).unwrap()
+        );
+    }
 }
 
 fn convert(md: &str) -> Value {
