@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { selectPlatform, resolvePackageDir } = require("../bin/adfc.js");
+const { selectPlatform, locateBinary } = require("../bin/adfc.js");
 const { runtimeConfig } = require("../../scripts/platforms.js");
 
 const PLATFORMS = runtimeConfig();
@@ -58,31 +58,54 @@ test("unsupported arch on a supported os is still rejected", () => {
   assert.throws(() => selectPlatform(PLATFORMS, "linux", "ia32"), /unsupported platform/);
 });
 
-test("resolvePackageDir finds a sibling package layout", () => {
+test("locateBinary finds a sibling package layout", () => {
   // Mirrors node_modules/adfc/bin/adfc.js next to node_modules/adfc-linux-x64.
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "adfc-resolve-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "adfc-locate-"));
+  const sibling = path.join(root, "adfc-linux-x64");
+  fs.mkdirSync(sibling, { recursive: true });
+  fs.writeFileSync(path.join(sibling, "adfc"), "#!/bin/sh\ntrue\n");
+
+  const shimDir = path.join(root, "adfc", "bin");
+  fs.mkdirSync(shimDir, { recursive: true });
+  fs.copyFileSync(
+    path.join(__dirname, "..", "bin", "adfc.js"),
+    path.join(shimDir, "adfc.js"),
+  );
+
+  const relocated = require(path.join(shimDir, "adfc.js"));
+  const spec = selectPlatform(PLATFORMS, "linux", "x64");
+  assert.equal(relocated.locateBinary(spec), path.join(sibling, "adfc"));
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a package present but missing its binary reads as not installed", () => {
+  // Checking for the binary rather than the manifest is what turns a
+  // half-installed package into a clear error here instead of a failure at exec.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "adfc-partial-"));
   const sibling = path.join(root, "adfc-linux-x64");
   fs.mkdirSync(sibling, { recursive: true });
   fs.writeFileSync(path.join(sibling, "package.json"), "{}");
 
   const shimDir = path.join(root, "adfc", "bin");
   fs.mkdirSync(shimDir, { recursive: true });
-
-  // resolvePackageDir walks up two levels from the shim's own directory, so
-  // exercise it from a copy placed in that layout.
   fs.copyFileSync(
     path.join(__dirname, "..", "bin", "adfc.js"),
     path.join(shimDir, "adfc.js"),
   );
+
   const relocated = require(path.join(shimDir, "adfc.js"));
-  assert.equal(relocated.resolvePackageDir("adfc-linux-x64"), sibling);
+  assert.throws(
+    () => relocated.locateBinary(selectPlatform(PLATFORMS, "linux", "x64")),
+    /is missing adfc/,
+  );
 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("resolvePackageDir reports a missing package clearly", () => {
+test("locateBinary reports a missing package clearly", () => {
   assert.throws(
-    () => resolvePackageDir("adfc-definitely-not-installed"),
+    () => locateBinary({ packageName: "adfc-not-installed", binaryName: "adfc" }),
     /is not installed/,
   );
 });
