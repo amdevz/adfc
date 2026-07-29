@@ -22,7 +22,7 @@ pub const ATTACHMENT_SCHEME: &str = "attachment:";
 /// real media nodes, since the uploader can resolve them.
 ///
 /// ```
-/// let doc = jira_md2adf::markdown_to_adf("# Title");
+/// let doc = adfc::markdown_to_adf("# Title");
 /// assert_eq!(doc["content"][0]["type"], "heading");
 /// assert_eq!(doc["content"][0]["attrs"]["level"], 1);
 /// ```

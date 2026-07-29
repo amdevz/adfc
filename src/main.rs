@@ -1,4 +1,4 @@
-//! jira-md2adf - Markdown on stdin, ADF JSON on stdout.
+//! adfc - Markdown on stdin, ADF JSON on stdout.
 //!
 //! With --schema <file>, the output is validated against that ADF JSON
 //! Schema before printing; violations go to stderr and exit non-zero.
@@ -6,7 +6,7 @@
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: jira-md2adf [--schema <adf-schema.json>] < input.md > output.json";
+const USAGE: &str = "usage: adfc [--schema <adf-schema.json>] < input.md > output.json";
 
 fn main() -> ExitCode {
     let mut schema_path: Option<String> = None;
@@ -17,7 +17,7 @@ fn main() -> ExitCode {
                 if let Some(path) = args.next() {
                     schema_path = Some(path);
                 } else {
-                    eprintln!("jira-md2adf: --schema requires a path\n{USAGE}");
+                    eprintln!("adfc: --schema requires a path\n{USAGE}");
                     return ExitCode::from(2);
                 }
             }
@@ -26,11 +26,11 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             "--version" | "-V" => {
-                println!("jira-md2adf {}", env!("CARGO_PKG_VERSION"));
+                println!("adfc {}", env!("CARGO_PKG_VERSION"));
                 return ExitCode::SUCCESS;
             }
             other => {
-                eprintln!("jira-md2adf: unknown argument: {other}\n{USAGE}");
+                eprintln!("adfc: unknown argument: {other}\n{USAGE}");
                 return ExitCode::from(2);
             }
         }
@@ -38,11 +38,11 @@ fn main() -> ExitCode {
 
     let mut markdown = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut markdown) {
-        eprintln!("jira-md2adf: failed to read stdin: {e}");
+        eprintln!("adfc: failed to read stdin: {e}");
         return ExitCode::FAILURE;
     }
 
-    let doc = jira_md2adf::markdown_to_adf(&markdown);
+    let doc = adfc::markdown_to_adf(&markdown);
 
     if let Some(path) = schema_path {
         let schema: serde_json::Value = match std::fs::read_to_string(&path)
@@ -51,14 +51,14 @@ fn main() -> ExitCode {
         {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("jira-md2adf: cannot load schema {path}: {e}");
+                eprintln!("adfc: cannot load schema {path}: {e}");
                 return ExitCode::FAILURE;
             }
         };
         let validator = match jsonschema::validator_for(&schema) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("jira-md2adf: invalid schema {path}: {e}");
+                eprintln!("adfc: invalid schema {path}: {e}");
                 return ExitCode::FAILURE;
             }
         };
@@ -68,7 +68,7 @@ fn main() -> ExitCode {
             .collect();
         if !errors.is_empty() {
             eprintln!(
-                "jira-md2adf: output failed ADF schema validation:\n{}",
+                "adfc: output failed ADF schema validation:\n{}",
                 errors.join("\n")
             );
             return ExitCode::FAILURE;
@@ -76,12 +76,12 @@ fn main() -> ExitCode {
     }
 
     // Write directly (not println!) so a downstream consumer closing the
-    // pipe early — `jira-md2adf | head` — is a quiet success, not a panic.
+    // pipe early — `adfc | head` — is a quiet success, not a panic.
     match writeln!(std::io::stdout(), "{doc}") {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("jira-md2adf: failed to write output: {e}");
+            eprintln!("adfc: failed to write output: {e}");
             ExitCode::FAILURE
         }
     }

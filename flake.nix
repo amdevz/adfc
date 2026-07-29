@@ -15,7 +15,7 @@
     cargoToml = fromTOML (builtins.readFile ./Cargo.toml);
   in {
     packages = forAllSystems (pkgs: rec {
-      jira-md2adf = pkgs.rustPlatform.buildRustPackage {
+      adfc = pkgs.rustPlatform.buildRustPackage {
         pname = cargoToml.package.name;
         inherit (cargoToml.package) version;
         src = ./.;
@@ -36,7 +36,7 @@
           mainProgram = cargoToml.package.name;
         };
       };
-      default = jira-md2adf;
+      default = adfc;
     });
 
     devShells = forAllSystems (pkgs: {
