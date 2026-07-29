@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # An advisory can be published against dependencies that have not changed, so
+  # the audit job needs a trigger that is not tied to a push.
+  schedule:
+    - cron: "0 6 * * 1"
 
 # Superseded runs on the same ref are pointless once a newer commit exists.
 # main is excluded: post-merge runs are the record of whether that commit is
@@ -41,12 +45,29 @@ jobs:
 
   # Separate job so an advisory against a dependency is distinguishable at a
   # glance from a code failure, and so it still runs when the test job fails.
-  # Left on rustsec/audit-check rather than the devShell: the action annotates
-  # advisories inline on the PR, which a bare `cargo audit` run cannot do.
   audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: rustsec/audit-check@v2
+      - uses: cachix/install-nix-action@v30
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # The RustSec advisory database is a ~46MB git clone, and fetching it
+      # from scratch is what made this job take six minutes. Restored from
+      # cache the fetch is an incremental delta and `cargo audit` itself runs
+      # in under a second.
+      #
+      # The key is unique per run so every run writes back a fresher database;
+      # restore-keys falls back to the most recent one. A stale cache cannot
+      # hide a new advisory because cargo audit still fetches the delta before
+      # scanning.
+      - name: Cache advisory database
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/advisory-db
+          key: advisory-db-${{ github.run_id }}
+          restore-keys: advisory-db-
+      # Same recipe a developer runs, using the cargo-audit in the devShell.
+      - name: Audit
+        run: nix develop --command just audit
