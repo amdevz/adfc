@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Markdown -> Atlassian Document Format (ADF) conversion.
 //!
 //! The emitted document targets the official ADF JSON Schema
@@ -5,6 +7,113 @@
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde_json::{Map, Value, json};
+use std::sync::OnceLock;
+
+/// The official Atlassian ADF JSON Schema, compiled into the binary.
+///
+/// Embedded rather than read from disk so a binary installed from a registry
+/// can validate its own output: an `npx adfc` or `cargo install adfc` user has
+/// no checkout, and a validation feature that needs a file path is unreachable
+/// for them. The vendored file stays the single source of truth, so refreshing
+/// it from <http://go.atlassian.com/adf-json-schema> needs no code change.
+pub const ADF_SCHEMA: &str = include_str!("../schema/adf-schema.json");
+
+/// The compiled validator for [`ADF_SCHEMA`], built once per process.
+///
+/// Private: `jsonschema` is a 0.x dependency, so exposing its types here would
+/// make every one of its breaking releases a breaking release of this crate.
+///
+/// Compiling this schema costs roughly 15ms and dominates the cost of a
+/// conversion, so it is cached: a caller validating many documents pays it
+/// once. A single CLI run validates once and sees no benefit, but nor does it
+/// pay anything extra.
+///
+/// # Panics
+///
+/// Panics if the embedded schema fails to parse or compile. That is a build
+/// defect rather than a runtime condition: the schema is fixed at compile
+/// time, so a failure would occur on every run and is caught by the test
+/// suite, which compiles the same validator.
+fn validator() -> &'static jsonschema::Validator {
+    static VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
+    VALIDATOR.get_or_init(|| {
+        // Panicking here is correct: the schema is embedded at compile time, so
+        // a failure is a build defect that every run would hit, not a runtime
+        // condition a caller could handle. The test suite compiles it too, so
+        // a bad vendored schema fails CI rather than reaching a user.
+        let schema: Value =
+            serde_json::from_str(ADF_SCHEMA).expect("vendored ADF schema is valid JSON");
+        jsonschema::validator_for(&schema).expect("vendored ADF schema compiles")
+    })
+}
+
+/// The schema violations found in a document, rendered one per line.
+#[derive(Debug, thiserror::Error)]
+#[error("{}", .0.join("\n"))]
+pub struct SchemaViolations(Vec<String>);
+
+impl SchemaViolations {
+    /// The individual violations, each already carrying its instance path.
+    #[must_use]
+    pub fn violations(&self) -> &[String] {
+        &self.0
+    }
+}
+
+/// Validate a document against the embedded [`ADF_SCHEMA`].
+///
+/// ```
+/// let doc = adfc::markdown_to_adf("# Title");
+/// assert!(adfc::validate(&doc).is_ok());
+/// ```
+///
+/// # Errors
+///
+/// Returns every violation found, not just the first, so one run surfaces the
+/// whole problem rather than one layer of it.
+pub fn validate(doc: &Value) -> Result<(), SchemaViolations> {
+    validate_with(validator(), doc)
+}
+
+/// Validate a document against an arbitrary ADF schema.
+///
+/// Backs the CLI's `--schema` override, which checks against a newer Atlassian
+/// revision than the vendored one without rebuilding. Takes the schema as a
+/// [`Value`] rather than a compiled validator so no `jsonschema` type appears
+/// in this crate's public API.
+///
+/// # Errors
+///
+/// [`SchemaError::InvalidSchema`] if `schema` is not usable as a JSON Schema,
+/// otherwise every violation found in `doc`.
+pub fn validate_against(schema: &Value, doc: &Value) -> Result<(), SchemaError> {
+    let validator =
+        jsonschema::validator_for(schema).map_err(|e| SchemaError::InvalidSchema(e.to_string()))?;
+    validate_with(&validator, doc).map_err(SchemaError::Violations)
+}
+
+/// The failure modes of validating against a caller-supplied schema.
+#[derive(Debug, thiserror::Error)]
+pub enum SchemaError {
+    /// The supplied schema could not be compiled.
+    #[error("not a usable JSON Schema: {0}")]
+    InvalidSchema(String),
+    /// The document violated the schema.
+    #[error("{0}")]
+    Violations(#[from] SchemaViolations),
+}
+
+fn validate_with(validator: &jsonschema::Validator, doc: &Value) -> Result<(), SchemaViolations> {
+    let violations: Vec<String> = validator
+        .iter_errors(doc)
+        .map(|e| format!("{e} at {}", e.instance_path))
+        .collect();
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(SchemaViolations(violations))
+    }
+}
 
 /// URL scheme marking an image as an issue attachment rather than a remote one.
 ///
@@ -484,5 +593,73 @@ fn heading_level(level: HeadingLevel) -> u8 {
         HeadingLevel::H4 => 4,
         HeadingLevel::H5 => 5,
         HeadingLevel::H6 => 6,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_schema_parses() {
+        let schema: Value =
+            serde_json::from_str(ADF_SCHEMA).expect("embedded schema is valid JSON");
+        assert_eq!(schema["$schema"], "http://json-schema.org/draft-04/schema#");
+    }
+
+    #[test]
+    fn validator_is_cached() {
+        // Two calls must hand back the same compiled validator: compiling the
+        // schema is ~15ms and dominates a conversion, so a fresh compile per
+        // call would be the whole cost of validation paid repeatedly.
+        assert!(std::ptr::eq(validator(), validator()));
+    }
+
+    #[test]
+    fn validate_accepts_converted_doc() {
+        let doc = markdown_to_adf("# Title\n\nSome **bold** text.");
+        assert!(validate(&doc).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_handmade_invalid_doc() {
+        // heading levels are constrained to 1..=6 by the schema.
+        let doc = json!({
+            "version": 1,
+            "type": "doc",
+            "content": [{
+                "type": "heading",
+                "attrs": {"level": 99},
+                "content": [{"type": "text", "text": "nope"}],
+            }],
+        });
+        assert!(validate(&doc).is_err());
+    }
+
+    #[test]
+    fn violations_render_one_per_line() {
+        let doc = json!({"version": 1, "type": "doc", "content": [
+            {"type": "heading", "attrs": {"level": 99}, "content": [{"type": "text", "text": "a"}]},
+            {"type": "heading", "attrs": {"level": 42}, "content": [{"type": "text", "text": "b"}]},
+        ]});
+        let err = validate(&doc).expect_err("invalid doc must fail validation");
+        let rendered = err.to_string();
+        assert!(rendered.lines().count() >= 2, "got: {rendered}");
+    }
+
+    #[test]
+    fn violations_carry_instance_paths() {
+        let doc = json!({"version": 1, "type": "doc", "content": [
+            {"type": "heading", "attrs": {"level": 99}, "content": [{"type": "text", "text": "a"}]},
+        ]});
+        let err = validate(&doc).expect_err("invalid doc must fail validation");
+        assert!(err.to_string().contains("/content/0"), "got: {err}");
+    }
+
+    #[test]
+    fn empty_document_is_valid() {
+        let doc = markdown_to_adf("");
+        assert_eq!(doc["content"], json!([]));
+        assert!(validate(&doc).is_ok());
     }
 }
