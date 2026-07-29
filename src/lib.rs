@@ -423,7 +423,18 @@ impl Builder {
                     self.image_alt.push_str(&t);
                     return;
                 }
-                let mut marks = self.marks.clone();
+                // ADF treats code as near-exclusive: alongside it a text node
+                // may carry only link and annotation. Emitting the enclosing
+                // strong/em/strike as well produces a node matching neither
+                // code_inline_node nor formatted_text_inline_node, which the
+                // API rejects. The emphasis is dropped rather than the code
+                // because code is what changes the meaning of the run.
+                let mut marks: Vec<Value> = self
+                    .marks
+                    .iter()
+                    .filter(|m| m["type"] == "link")
+                    .cloned()
+                    .collect();
                 marks.push(json!({"type": "code"}));
                 let node = json!({"type": "text", "text": t.as_ref(), "marks": marks});
                 self.append_block_or_inline(node);

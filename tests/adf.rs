@@ -289,3 +289,54 @@ fn kitchen_sink_validates() {
          > note\n\n```sh\necho hi\n```\n\n| h |\n|---|\n| c |\n\n---\n\ndone",
     );
 }
+
+#[test]
+fn inline_code_inside_bold_drops_the_incompatible_mark() {
+    // ADF's code_inline_node permits only code, link and annotation alongside
+    // code; formatted_text_inline_node permits everything except code. A text
+    // node carrying both strong and code therefore matches neither, and the
+    // API rejects the document.
+    let doc = convert("**bold `c`**");
+    let inline = &doc["content"][0]["content"];
+    let coded = inline
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["text"] == "c")
+        .expect("the code run survives");
+    let marks: Vec<&str> = coded["marks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(marks, vec!["code"], "code must not be combined with strong");
+}
+
+#[test]
+fn inline_code_keeps_an_enclosing_link() {
+    // link is one of the three marks ADF does allow next to code.
+    let doc = convert("[see `c`](https://example.com)");
+    let inline = &doc["content"][0]["content"];
+    let coded = inline
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["text"] == "c")
+        .expect("the code run survives");
+    let marks: Vec<&str> = coded["marks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["type"].as_str().unwrap())
+        .collect();
+    assert!(marks.contains(&"code"), "got {marks:?}");
+    assert!(marks.contains(&"link"), "got {marks:?}");
+}
+
+#[test]
+fn inline_code_inside_em_and_strike_is_valid() {
+    convert("*em `c`*");
+    convert("~~struck `c`~~");
+    convert("# Heading `c` with **bold `c`**");
+}
