@@ -1,1 +1,4 @@
 /target
+
+# direnv's generated state, not the committed .envrc itself.
+/.direnv
