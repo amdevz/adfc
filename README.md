@@ -1,104 +1,104 @@
 # adfc
 
 Convert Markdown to [Atlassian Document Format
-(ADF)](https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/),
-the rich-text JSON format Atlassian's Cloud REST APIs use for rich text —
-Jira issue descriptions and comments, Confluence content, and anywhere else
-ADF appears.
+(ADF)](https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/) —
+the JSON that Atlassian Cloud REST APIs accept for rich text, in Jira issues
+and comments, Confluence content, and anywhere else ADF appears.
 
-Built for pipelines that treat Atlassian documents as rendered artifacts:
-Markdown in, schema-valid ADF out, no network access, single static binary.
+Markdown in, schema-valid ADF out. No network access, no configuration.
 
 ## Install
 
+**As a command:**
+
 ```sh
-cargo install --path .   # from a clone
+npx adfc --version     # without installing
+npm i -g adfc          # globally
+npm i -D adfc          # as a project dev dependency
+cargo install adfc     # from crates.io
 ```
 
-Prebuilt binaries and `npx adfc` arrive with the first tagged release.
+The npm packages ship a prebuilt binary for Linux, macOS and Windows on x64 and
+arm64. Nothing is compiled or fetched during install, so `npm ci
+--ignore-scripts`, offline caches and mirrored registries all work. Linux is a
+static musl build and runs on Alpine as well as glibc.
+
+**As a library:**
+
+```sh
+cargo add adfc --no-default-features
+```
+
+`--no-default-features` drops the CLI's argument-parsing dependencies, which the
+library does not use.
 
 ## Usage
 
 ```sh
-adfc ticket-body.md -o description.json
-
-# Files are optional on both ends: stdin and stdout are the defaults
-adfc ticket-body.md > description.json
-cat ticket-body.md | adfc | jq .
+adfc ticket.md -o description.json
+adfc ticket.md > description.json     # stdout is the default
+cat ticket.md | adfc | jq .           # stdin too
 ```
 
-- Markdown in (a `FILE` argument, or stdin), compact ADF JSON
-  (`{"version":1,"type":"doc",...}`) out (`-o FILE`, or stdout).
-- **Output is validated against the ADF schema by default.** The schema is
-  compiled into the binary, so this works with no checkout present. Violations
-  are printed to stderr and the process exits non-zero **without writing any
-  output**, so a malformed document fails locally instead of at the Atlassian
-  API — and never reaches a downstream consumer.
-- `--no-validate`: skip validation.
-- `--schema <file>`: validate against a different schema revision than the
-  embedded one. Conflicts with `--no-validate`.
-- `--version` / `--help`.
+| Flag | Effect |
+| --- | --- |
+| `-o, --output <FILE>` | Write here instead of stdout |
+| `--no-validate` | Skip schema validation |
+| `--schema <FILE>` | Validate against a different ADF schema revision |
+| `-h, --help` / `-V, --version` | |
 
-Exit codes: `0` success (including a downstream pipe closing early), `1`
-runtime failure (unreadable input, unwritable output, schema violation), `2`
-usage error.
+Output is validated against the ADF schema by default. The schema is compiled
+into the binary, so this needs no files on disk. On a violation, every error
+goes to stderr and **nothing is written** — a malformed document fails here
+rather than at the Atlassian API, and never reaches a consumer.
+
+Exit codes: `0` success, including a downstream pipe closing early; `1` runtime
+failure; `2` usage error.
+
+## Library
+
+```rust
+let doc = adfc::markdown_to_adf("# Title\n\nSome **bold** text.");
+adfc::validate(&doc)?;
+
+// doc is a serde_json::Value, ready to PUT as an issue description.
+println!("{doc}");
+```
+
+`markdown_to_adf` cannot fail: constructs with no ADF equivalent degrade rather
+than error. `validate` checks a document against the embedded schema, and
+`validate_against` checks it against one you supply.
 
 ## Supported Markdown
 
-| Markdown                          | ADF                                     |
-| --------------------------------- | --------------------------------------- |
-| Headings `#`..`######`            | `heading` (levels 1-6)                  |
-| Paragraphs                        | `paragraph`                             |
-| Bullet / ordered lists (nested)   | `bulletList` / `orderedList` (`order` preserves the start number) |
-| Fenced / indented code blocks     | `codeBlock` (`language` from the fence) |
-| Blockquotes                       | `blockquote`                            |
-| Tables (GFM)                      | `table` / `tableRow` / `tableHeader` / `tableCell` |
-| `---`                             | `rule`                                  |
-| Hard breaks (trailing spaces)     | `hardBreak`                             |
-| `- [ ]` / `- [x]` task lists      | `taskList` / `taskItem` (`TODO` / `DONE`) |
-| `> [!NOTE]` GitHub alerts         | `panel` (see mapping below)             |
-| `![alt](attachment:file.png)`     | `mediaSingle` / `media` (see images below) |
-| `**bold**` `*em*` `` `code` `` `~~strike~~` `[link](url)` | `strong` / `em` / `code` / `strike` / `link` marks |
+| Markdown | ADF |
+| --- | --- |
+| `#`..`######` | `heading`, levels 1-6 |
+| Paragraphs | `paragraph` |
+| Bullet and ordered lists, nested | `bulletList` / `orderedList`, preserving the start number |
+| Fenced and indented code blocks | `codeBlock`, with the fence's language |
+| Blockquotes | `blockquote` |
+| GFM tables | `table` / `tableRow` / `tableHeader` / `tableCell` |
+| `---` | `rule` |
+| Hard breaks | `hardBreak` |
+| `- [ ]` / `- [x]` | `taskList` / `taskItem` |
+| `> [!NOTE]` alerts | `panel` |
+| `![alt](attachment:f.png)` | `mediaSingle` / `media` |
+| `**bold**` `*em*` `` `code` `` `~~strike~~` `[link](url)` | `strong` / `em` / `code` / `strike` / `link` |
 
-Alert-to-panel mapping (the marker line is consumed, not rendered):
+GitHub alerts map to panel types: `NOTE` → `note`, `TIP` → `success`,
+`IMPORTANT` → `info`, `WARNING` → `warning`, `CAUTION` → `error`. A blockquote
+without a marker stays a `blockquote`.
 
-| Markdown        | ADF `panelType` |
-| --------------- | --------------- |
-| `> [!NOTE]`     | `note`          |
-| `> [!TIP]`      | `success`       |
-| `> [!IMPORTANT]`| `info`          |
-| `> [!WARNING]`  | `warning`       |
-| `> [!CAUTION]`  | `error`         |
+## Where ADF cannot follow
 
-A blockquote without a marker stays a plain `blockquote`.
-
-### Images
-
-Images split on their URL scheme:
-
-- **`attachment:` URLs** become a `mediaSingle` wrapping an `external` media
-  node, so a diagram renders inline. The URL keeps its `attachment:`
-  placeholder for a later upload step to rewrite once it knows the content
-  URL. An `external` node is used rather than a `file` node because a `file`
-  node additionally requires a media id and collection, which the REST API
-  never exposes for an attachment. Media is hoisted out of any enclosing
-  paragraph, since ADF paragraphs accept inline content only.
-- **Every other URL** degrades to a link labeled with its alt text. ADF has
-  no way to reference an image the pipeline cannot upload, so the reference
-  is kept visible rather than dropped.
-
-Other degradations (ADF has no lossless equivalent):
-
-- **Raw HTML** is kept as plain text rather than dropped.
-- Soft line breaks become spaces (matching how Atlassian renders flowed text).
-
-## Schema
-
-The official Atlassian ADF JSON Schema is vendored from
-<http://go.atlassian.com/adf-json-schema> and compiled into the binary, which
-is why validation needs no files on disk. `--schema` swaps in a different
-revision without rebuilding, for testing against a newer one than the release
-carries.
+- **Images** with an `attachment:` URL become media nodes, keeping the scheme as
+  a placeholder for an uploader to rewrite. Every other URL degrades to a link
+  labelled with its alt text, since ADF cannot reference an image this tool
+  cannot upload.
+- **Inline code** loses any surrounding emphasis; ADF forbids combining them.
+- **Raw HTML** is kept as plain text.
+- **Soft line breaks** become spaces, matching how Atlassian renders flowed text.
 
 ## Contributing
 
@@ -107,11 +107,10 @@ The toolchain is pinned in `flake.lock`, so a clone plus
 
 ```sh
 direnv allow    # or: nix develop
-just check      # format, lint, and both test suites
+just check      # format, lint, both test suites
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the recipes, testing conventions and
-release process.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
