@@ -417,3 +417,52 @@ fn file_argument_with_oversized_stdin_does_not_break_the_harness() {
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert!(!r.stdout.contains("FromStdin"), "stdin leaked into output");
 }
+
+// --- the validation depth bound ---------------------------------------------
+
+/// Markdown nesting `depth` levels of bullet list. Kept under the 64KB stdin
+/// pipe buffer noted on `run`, so the write cannot block.
+fn nested_list_markdown(depth: usize) -> String {
+    (0..depth)
+        .map(|i| format!("{}- item", "  ".repeat(i)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn deeply_nested_input_is_refused_rather_than_exhausting_memory() {
+    // Before the bound this aborted the process on an allocation failure after
+    // ~2GB. It must now fail fast, explain itself, and name the escape hatch.
+    let r = run(&[], &nested_list_markdown(200));
+    assert_ne!(r.code, 0, "should refuse, stdout: {}", r.stdout);
+    assert!(
+        r.stderr.contains("nests") && r.stderr.contains("--no-validate"),
+        "stderr should name the depth and the way past it: {}",
+        r.stderr
+    );
+    // Same contract as a schema violation: nothing reaches stdout, so a
+    // downstream consumer cannot ship a document this run never checked.
+    assert!(
+        r.stdout.is_empty(),
+        "refused run must emit no document, got: {}",
+        r.stdout
+    );
+}
+
+#[test]
+fn no_validate_converts_deeply_nested_input() {
+    // The bound limits checking, not converting: skipping validation must still
+    // produce the document.
+    //
+    // Asserted as text rather than by parsing it back, because serde_json's own
+    // default recursion limit is 128 — the same depth MAX_VALIDATION_DEPTH
+    // allows — so no default parser can read output this deep. That is the
+    // reason the limit sits where it does.
+    let r = run(&["--no-validate"], &nested_list_markdown(200));
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(
+        r.stdout.starts_with(r#"{"content":["#) && r.stdout.contains(r#""type":"doc""#),
+        "should still emit a document, got: {}",
+        &r.stdout[..r.stdout.len().min(80)]
+    );
+}

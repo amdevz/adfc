@@ -54,6 +54,12 @@ into the binary, so this needs no files on disk. On a violation, every error
 goes to stderr and **nothing is written** — a malformed document fails here
 rather than at the Atlassian API, and never reaches a consumer.
 
+Validation is bounded at 128 levels of nesting. The ADF schema is a recursive
+union of `anyOf` branches, so the cost of checking compounds with depth; past
+this point a document is refused rather than checked, naming its own depth. The
+bound matches `serde_json`'s default recursion limit, so nothing that could be
+parsed back is turned away. `--no-validate` converts such a document anyway.
+
 Exit codes: `0` success, including a downstream pipe closing early; `1` runtime
 failure; `2` usage error.
 

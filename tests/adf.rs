@@ -605,3 +605,57 @@ fn an_image_still_follows_the_text_that_introduced_it() {
         .collect();
     assert_eq!(types, vec!["paragraph", "mediaSingle"]);
 }
+
+/// Markdown nesting `depth` levels of bullet list, one item per level.
+///
+/// Each Markdown level costs four JSON levels (list, item, paragraph, text), so
+/// the emitted depth is roughly `4 * depth + 5`.
+fn nested_list_markdown(depth: usize) -> String {
+    (0..depth)
+        .map(|i| format!("{}- item", "  ".repeat(i)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn validation_refuses_a_document_past_the_depth_limit() {
+    // The ADF schema is a recursive anyOf union, so branch exploration compounds
+    // with nesting: this input is 41 KB and drove validation past 2 GB before it
+    // was bounded, aborting the process. The refusal must come from the guard,
+    // not from the validator running out of memory.
+    let doc = markdown_to_adf(&nested_list_markdown(200));
+    match adfc::validate(&doc) {
+        Err(adfc::ValidationError::TooDeep { depth, limit }) => {
+            assert_eq!(limit, adfc::MAX_VALIDATION_DEPTH);
+            assert!(
+                depth > limit,
+                "reported depth {depth} should exceed the limit {limit}"
+            );
+        }
+        other => panic!("expected TooDeep, got {other:?}"),
+    }
+}
+
+#[test]
+fn validation_accepts_ordinary_nesting() {
+    // The guard must not turn real documents away. Twenty levels of list is
+    // already deeper than hand-written content goes, and stays well inside the
+    // limit.
+    let doc = markdown_to_adf(&nested_list_markdown(20));
+    assert!(adfc::validate(&doc).is_ok());
+}
+
+#[test]
+fn the_depth_guard_reports_the_documents_own_depth() {
+    // The error carries the actual depth so a caller can see how far over it is,
+    // rather than only that some limit was hit.
+    let doc = markdown_to_adf(&nested_list_markdown(50));
+    let Err(adfc::ValidationError::TooDeep { depth, .. }) = adfc::validate(&doc) else {
+        panic!("50 levels of list should exceed the limit");
+    };
+    // 4 levels of JSON per Markdown level, plus the doc/content wrapper.
+    assert!(
+        (200..=210).contains(&depth),
+        "depth {depth} should track the document's real nesting"
+    );
+}

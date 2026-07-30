@@ -58,8 +58,17 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         match &cli.schema {
             Some(path) => adfc::validate_against(&load_schema(path)?, &doc)
                 .with_context(|| format!("validating against {}", path.display()))?,
-            None => adfc::validate(&doc).map_err(|violations| {
-                anyhow::anyhow!("output failed ADF schema validation:\n{violations}")
+            // A refusal and a violation need different messages: the first says
+            // the document was never checked, the second that it was and failed.
+            // Reporting a refusal as a schema failure would send the reader
+            // hunting for a defect that may not exist.
+            None => adfc::validate(&doc).map_err(|e| match e {
+                adfc::ValidationError::TooDeep { .. } => {
+                    anyhow::anyhow!("{e}; pass --no-validate to convert it unchecked")
+                }
+                adfc::ValidationError::Violations(_) => {
+                    anyhow::anyhow!("output failed ADF schema validation:\n{e}")
+                }
             })?,
         }
     }

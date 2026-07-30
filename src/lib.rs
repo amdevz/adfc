@@ -47,6 +47,44 @@ fn validator() -> &'static jsonschema::Validator {
     })
 }
 
+/// The deepest document [`validate`] and [`validate_against`] will check.
+///
+/// The ADF schema is a recursive union of `anyOf` branches, so the work of
+/// finding which branch a node matches compounds with nesting: validating a
+/// *valid* document 125 levels deep costs around 150 MB, and 41 KB of nested
+/// Markdown lists (roughly 800 levels) exhausted 2 GB and aborted. Since
+/// validation is on by default and [`markdown_to_adf`] cannot fail, an
+/// unbounded check hands that abort to anyone converting untrusted Markdown.
+///
+/// Real documents sit far below this: a nested list inside a table cell inside
+/// a panel reaches roughly 25 levels, so this leaves several times that
+/// headroom while keeping the worst case bounded.
+///
+/// 128 is not arbitrary. It is `serde_json`'s own default recursion limit, so a
+/// document deeper than this cannot be read back by a default `serde_json`
+/// parser — including the one any consumer of this crate is likely to use.
+/// Refusing to validate past the point where the output stops being parseable
+/// costs nothing that was usable to begin with.
+pub const MAX_VALIDATION_DEPTH: usize = 128;
+
+/// Why a document could not be validated.
+#[derive(Debug, thiserror::Error)]
+pub enum ValidationError {
+    /// Nesting exceeded [`MAX_VALIDATION_DEPTH`], so the document was refused
+    /// without being checked. This says nothing about whether it is valid ADF,
+    /// only that confirming it would cost more than the check is worth.
+    #[error("document nests {depth} levels deep, over the limit of {limit}")]
+    TooDeep {
+        /// The document's actual nesting depth.
+        depth: usize,
+        /// The limit that was exceeded, always [`MAX_VALIDATION_DEPTH`].
+        limit: usize,
+    },
+    /// The document was checked and violated the schema.
+    #[error("{0}")]
+    Violations(#[from] SchemaViolations),
+}
+
 /// The schema violations found in a document, rendered one per line.
 #[derive(Debug, thiserror::Error)]
 #[error("{}", .0.join("\n"))]
@@ -69,10 +107,14 @@ impl SchemaViolations {
 ///
 /// # Errors
 ///
-/// Returns every violation found, not just the first, so one run surfaces the
+/// [`ValidationError::TooDeep`] if the document nests beyond
+/// [`MAX_VALIDATION_DEPTH`], checked before any validation work so a
+/// pathologically nested document costs a walk rather than gigabytes.
+/// Otherwise every violation found, not just the first, so one run surfaces the
 /// whole problem rather than one layer of it.
-pub fn validate(doc: &Value) -> Result<(), SchemaViolations> {
-    validate_with(validator(), doc)
+pub fn validate(doc: &Value) -> Result<(), ValidationError> {
+    guard_depth(doc)?;
+    Ok(validate_with(validator(), doc)?)
 }
 
 /// Validate a document against an arbitrary ADF schema.
@@ -84,12 +126,15 @@ pub fn validate(doc: &Value) -> Result<(), SchemaViolations> {
 ///
 /// # Errors
 ///
-/// [`SchemaError::InvalidSchema`] if `schema` is not usable as a JSON Schema,
-/// otherwise every violation found in `doc`.
+/// [`SchemaError::InvalidSchema`] if `schema` is not usable as a JSON Schema.
+/// Otherwise the same conditions as [`validate`]: the
+/// [`MAX_VALIDATION_DEPTH`] bound applies here too, since a caller-supplied
+/// schema is no cheaper to check against than the vendored one.
 pub fn validate_against(schema: &Value, doc: &Value) -> Result<(), SchemaError> {
     let validator =
         jsonschema::validator_for(schema).map_err(|e| SchemaError::InvalidSchema(e.to_string()))?;
-    validate_with(&validator, doc).map_err(SchemaError::Violations)
+    guard_depth(doc)?;
+    Ok(validate_with(&validator, doc).map_err(ValidationError::Violations)?)
 }
 
 /// The failure modes of validating against a caller-supplied schema.
@@ -98,9 +143,40 @@ pub enum SchemaError {
     /// The supplied schema could not be compiled.
     #[error("not a usable JSON Schema: {0}")]
     InvalidSchema(String),
-    /// The document violated the schema.
+    /// The document could not be validated against it.
     #[error("{0}")]
-    Violations(#[from] SchemaViolations),
+    Validation(#[from] ValidationError),
+}
+
+/// Refuse a document whose nesting would make validation disproportionately
+/// expensive, before any validator touches it.
+fn guard_depth(doc: &Value) -> Result<(), ValidationError> {
+    let depth = nesting_depth(doc);
+    if depth > MAX_VALIDATION_DEPTH {
+        return Err(ValidationError::TooDeep {
+            depth,
+            limit: MAX_VALIDATION_DEPTH,
+        });
+    }
+    Ok(())
+}
+
+/// Depth of the most deeply nested container, counting the root as 1.
+///
+/// Iterative by necessity: a recursive walk would overflow the stack on exactly
+/// the documents this guard exists to reject.
+fn nesting_depth(doc: &Value) -> usize {
+    let mut deepest = 0;
+    let mut stack = vec![(doc, 1usize)];
+    while let Some((node, depth)) = stack.pop() {
+        deepest = deepest.max(depth);
+        match node {
+            Value::Object(map) => stack.extend(map.values().map(|v| (v, depth + 1))),
+            Value::Array(items) => stack.extend(items.iter().map(|v| (v, depth + 1))),
+            _ => {}
+        }
+    }
+    deepest
 }
 
 fn validate_with(validator: &jsonschema::Validator, doc: &Value) -> Result<(), SchemaViolations> {
