@@ -10,11 +10,16 @@ default:
     @just --list
 
 # Run everything CI runs; the gate before pushing.
-check: fmt-check lint test test-node
+check: fmt-check lint test test-lib-only test-node
 
 # Run the Rust test suite.
 test:
     cargo test
+
+# Check the library builds and tests without the CLI feature, the way a
+# library consumer depends on it.
+test-lib-only:
+    cargo test --no-default-features
 
 # Run the npm shim and packaging tests.
 test-node:

@@ -1,4 +1,11 @@
+#![cfg(feature = "cli")]
+
 //! CLI behaviour, driven against the real binary.
+//!
+//! Gated on the feature that builds the binary: without it there is nothing to
+//! spawn, and `CARGO_BIN_EXE_adfc` is not defined. The tests ship in the crate,
+//! so a consumer running the suite with default features off would otherwise
+//! see every case in this file fail.
 //!
 //! Uses `CARGO_BIN_EXE_adfc` and `std::process::Command` rather than a test
 //! harness crate: the binary is what ships, and this needs no dependency.

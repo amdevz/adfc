@@ -47,6 +47,10 @@ jobs:
         run: nix develop --command just lint
       - name: Tests
         run: nix develop --command just test
+      # A library consumer takes the crate without the CLI feature; nothing
+      # else here would notice if that stopped building.
+      - name: Tests (library only)
+        run: nix develop --command just test-lib-only
       - name: Node tests
         run: nix develop --command just test-node
 
