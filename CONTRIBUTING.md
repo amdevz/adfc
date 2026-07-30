@@ -23,9 +23,15 @@ just install-hooks    # run those gates automatically on commit
 
 ### Without nix
 
-Any Rust toolchain carrying the `rustfmt` and `clippy` components works, plus
-Node 18 or newer for the packaging tests. Note that `clippy` is **not** part of
-a bare `cargo` install, and its absence is what the hooks fail on first.
+You need four things on `PATH`:
+
+- a Rust toolchain with the `rustfmt` and `clippy` components — `clippy` is
+  **not** part of a bare `cargo` install, and its absence is what the hooks
+  fail on first
+- [`just`](https://github.com/casey/just), which every recipe below runs through
+- [`prek`](https://github.com/j178/prek) or
+  [`pre-commit`](https://pre-commit.com), to run `.pre-commit-config.yaml`
+- Node 18 or newer, for the packaging tests
 
 You give up the version pinning that keeps `cargo fmt --check` stable across
 machines: rustfmt's style rules follow its `style_edition`, and a toolchain
@@ -76,8 +82,12 @@ Do not add production flags whose only purpose is to make a test easier.
 **Commits** follow [Conventional Commits](https://www.conventionalcommits.org/):
 `type(scope): description`, with types `feat`, `fix`, `docs`, `style`,
 `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. Scopes are
-component or conceptual names (`adf`, `cli`, `npm`), never issue numbers. The
-`commit-msg` hook enforces the format.
+component or conceptual names (`adf`, `cli`, `npm`), never issue numbers.
+
+`just install-hooks` wires this up: it registers `.pre-commit-config.yaml` at
+Git's `pre-commit` and `commit-msg` stages, so the format is checked as you
+commit rather than in review. Everything it installs is declared in that file
+and fetched from public repositories.
 
 Keep each commit a single coherent change that builds and passes its tests on
 its own, so the history stays bisectable.
@@ -124,5 +134,7 @@ disagrees with the converter fails immediately.
 ## Opening a pull request
 
 Run `just check` first. Add a line to `CHANGELOG.md` under *Unreleased* if the
-change is user-visible; release notes are generated from it. Describe what changed and why it changed; if you made a
-tradeoff, say so rather than leaving it to be discovered in review.
+change is user-visible; release notes are generated from it.
+
+Describe what changed and why it changed. If you made a tradeoff, say so rather
+than leaving it to be discovered in review.
