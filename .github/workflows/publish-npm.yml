@@ -49,17 +49,19 @@ jobs:
         run: |
           set -euo pipefail
           expected="${TAG#v}"
-          count=0
-          for manifest in npm/.output/*/package.json; do
-            actual=$(nix develop --command node -e "process.stdout.write(require('./$manifest').version)")
+          # packageDirs() knows the layout, including that scoped packages nest
+          # a level; globbing here would silently miss them.
+          mapfile -t dirs < <(nix develop --command node -e "
+            console.log(require('./scripts/build-npm-packages.js').packageDirs('npm/.output').join('\n'))")
+          for dir in "${dirs[@]}"; do
+            actual=$(nix develop --command node -e "process.stdout.write(require('./$dir/package.json').version)")
             if [ "$actual" != "$expected" ]; then
-              echo "::error::$manifest is $actual, expected $expected"
+              echo "::error::$dir is $actual, expected $expected"
               exit 1
             fi
-            count=$((count + 1))
           done
-          [ "$count" -eq 7 ] || { echo "::error::expected 7 packages, found $count"; exit 1; }
-          echo "all $count manifests at $expected"
+          [ "${#dirs[@]}" -eq 7 ] || { echo "::error::expected 7 packages, found ${#dirs[@]}"; exit 1; }
+          echo "all ${#dirs[@]} manifests at $expected"
 
       - name: Publish
         env:
@@ -89,5 +91,10 @@ jobs:
           # Platform packages first. The entry package's optionalDependencies
           # pin exact versions of these, so publishing it first would leave it
           # briefly installable and broken.
-          for dir in npm/.output/adfc-*; do publish "$dir"; done
+          mapfile -t dirs < <(nix develop --command node -e "
+            console.log(require('./scripts/build-npm-packages.js').packageDirs('npm/.output').join('\n'))")
+          for dir in "${dirs[@]}"; do
+            [ "$(basename "$dir")" = "adfc" ] && continue
+            publish "$dir"
+          done
           publish npm/.output/adfc

@@ -6,6 +6,11 @@
 // into the entry package as platforms.json for the runtime shim to read. Both
 // sides therefore cannot disagree about which package holds which binary.
 //
+// Platform packages live under a scope so a future target's name is reserved
+// by construction and one scope-level npm token covers packages that do not
+// exist yet. The entry package stays unscoped: `adfc` is what users type, and
+// it matches the crate and the binary.
+//
 // Linux is served a single statically linked musl build with no `libc` field,
 // so npm installs it on glibc distributions too. A static binary runs fine
 // there, which means the alternative — shipping glibc and musl variants and
@@ -15,7 +20,7 @@
 const PLATFORMS = [
   {
     rustTarget: "x86_64-unknown-linux-musl",
-    packageName: "adfc-linux-x64",
+    packageName: "@amdevz/adfc-linux-x64",
     archive: "adfc-x86_64-unknown-linux-musl.tar.gz",
     binaryName: "adfc",
     os: ["linux"],
@@ -23,7 +28,7 @@ const PLATFORMS = [
   },
   {
     rustTarget: "aarch64-unknown-linux-musl",
-    packageName: "adfc-linux-arm64",
+    packageName: "@amdevz/adfc-linux-arm64",
     archive: "adfc-aarch64-unknown-linux-musl.tar.gz",
     binaryName: "adfc",
     os: ["linux"],
@@ -31,7 +36,7 @@ const PLATFORMS = [
   },
   {
     rustTarget: "x86_64-apple-darwin",
-    packageName: "adfc-darwin-x64",
+    packageName: "@amdevz/adfc-darwin-x64",
     archive: "adfc-x86_64-apple-darwin.tar.gz",
     binaryName: "adfc",
     os: ["darwin"],
@@ -39,7 +44,7 @@ const PLATFORMS = [
   },
   {
     rustTarget: "aarch64-apple-darwin",
-    packageName: "adfc-darwin-arm64",
+    packageName: "@amdevz/adfc-darwin-arm64",
     archive: "adfc-aarch64-apple-darwin.tar.gz",
     binaryName: "adfc",
     os: ["darwin"],
@@ -47,7 +52,7 @@ const PLATFORMS = [
   },
   {
     rustTarget: "x86_64-pc-windows-msvc",
-    packageName: "adfc-win32-x64",
+    packageName: "@amdevz/adfc-win32-x64",
     archive: "adfc-x86_64-pc-windows-msvc.zip",
     binaryName: "adfc.exe",
     os: ["win32"],
@@ -55,7 +60,7 @@ const PLATFORMS = [
   },
   {
     rustTarget: "aarch64-pc-windows-msvc",
-    packageName: "adfc-win32-arm64",
+    packageName: "@amdevz/adfc-win32-arm64",
     archive: "adfc-aarch64-pc-windows-msvc.zip",
     binaryName: "adfc.exe",
     os: ["win32"],

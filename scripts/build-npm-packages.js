@@ -175,6 +175,29 @@ function writeEntryPackage(platforms, version, outDir) {
   return dir;
 }
 
+/**
+ * Every package directory under `outDir`.
+ *
+ * Scoped names nest a level (`@amdevz/adfc-linux-x64`), so a flat readdir
+ * would miss them. Exported so the tests, the release workflow and the
+ * end-to-end script all agree on the layout instead of each globbing for it.
+ */
+function packageDirs(outDir) {
+  const dirs = [];
+  for (const entry of fs.readdirSync(outDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const full = path.join(outDir, entry.name);
+    if (entry.name.startsWith("@")) {
+      for (const scoped of fs.readdirSync(full, { withFileTypes: true })) {
+        if (scoped.isDirectory()) dirs.push(path.join(full, scoped.name));
+      }
+    } else {
+      dirs.push(full);
+    }
+  }
+  return dirs.sort();
+}
+
 function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -213,4 +236,10 @@ if (require.main === module) {
   }
 }
 
-module.exports = { readVersion, extractBinary, writePlatformPackage, writeEntryPackage };
+module.exports = {
+  readVersion,
+  extractBinary,
+  writePlatformPackage,
+  writeEntryPackage,
+  packageDirs,
+};

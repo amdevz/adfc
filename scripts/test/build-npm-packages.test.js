@@ -10,6 +10,7 @@ const { execFileSync } = require("node:child_process");
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const SCRIPT = path.join(REPO_ROOT, "scripts", "build-npm-packages.js");
 const { PLATFORMS } = require("../platforms.js");
+const { packageDirs } = require("../build-npm-packages.js");
 
 /** A scratch directory holding a fake plan and fake release archives. */
 function makeFixtures(version = "9.9.9") {
@@ -64,16 +65,25 @@ function run(fixtures, extraArgs = []) {
   return outDir;
 }
 
-const manifest = (dir, pkg) =>
-  JSON.parse(fs.readFileSync(path.join(dir, pkg, "package.json"), "utf8"));
+const manifest = (out, pkg) =>
+  JSON.parse(fs.readFileSync(path.join(out, pkg, "package.json"), "utf8"));
+
+/** Package name -> its emitted directory, regardless of scoping. */
+const byName = (out) =>
+  Object.fromEntries(
+    packageDirs(out).map((dir) => [
+      JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).name,
+      dir,
+    ]),
+  );
 
 test("emits seven packages: one entry plus six platforms", () => {
   const f = makeFixtures();
   const out = run(f);
-  const dirs = fs.readdirSync(out).sort();
-  assert.equal(dirs.length, 7, `got ${dirs.join(", ")}`);
-  assert.ok(dirs.includes("adfc"));
-  for (const spec of PLATFORMS) assert.ok(dirs.includes(spec.packageName));
+  const found = byName(out);
+  assert.equal(Object.keys(found).length, 7, `got ${Object.keys(found).join(", ")}`);
+  assert.ok("adfc" in found);
+  for (const spec of PLATFORMS) assert.ok(spec.packageName in found, spec.packageName);
   fs.rmSync(f.root, { recursive: true, force: true });
 });
 
@@ -96,7 +106,9 @@ test("all seven manifests share one version", () => {
   const f = makeFixtures();
   const out = run(f);
   const versions = new Set(
-    fs.readdirSync(out).map((pkg) => manifest(out, pkg).version),
+    packageDirs(out).map(
+      (dir) => JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).version,
+    ),
   );
   assert.deepEqual([...versions], [f.version]);
   fs.rmSync(f.root, { recursive: true, force: true });
@@ -131,8 +143,8 @@ test("windows packages contain adfc.exe, others contain adfc", () => {
 test("every package ships a LICENSE", () => {
   const f = makeFixtures();
   const out = run(f);
-  for (const pkg of fs.readdirSync(out)) {
-    assert.ok(fs.existsSync(path.join(out, pkg, "LICENSE")), `${pkg}/LICENSE`);
+  for (const dir of packageDirs(out)) {
+    assert.ok(fs.existsSync(path.join(dir, "LICENSE")), `${dir}/LICENSE`);
   }
   fs.rmSync(f.root, { recursive: true, force: true });
 });
@@ -189,8 +201,10 @@ test("--only packages one platform but still lists all six as optional deps", ()
   }
   const out = run(f, ["--only", PLATFORMS[0].rustTarget]);
 
-  const dirs = fs.readdirSync(out).sort();
-  assert.deepEqual(dirs, ["adfc", PLATFORMS[0].packageName].sort());
+  assert.deepEqual(
+    Object.keys(byName(out)).sort(),
+    ["adfc", PLATFORMS[0].packageName].sort(),
+  );
   assert.equal(Object.keys(manifest(out, "adfc").optionalDependencies).length, 6);
   fs.rmSync(f.root, { recursive: true, force: true });
 });

@@ -13,12 +13,12 @@ const PLATFORMS = runtimeConfig();
 
 test("selects the right package for every supported platform", () => {
   const cases = [
-    ["linux", "x64", "adfc-linux-x64"],
-    ["linux", "arm64", "adfc-linux-arm64"],
-    ["darwin", "x64", "adfc-darwin-x64"],
-    ["darwin", "arm64", "adfc-darwin-arm64"],
-    ["win32", "x64", "adfc-win32-x64"],
-    ["win32", "arm64", "adfc-win32-arm64"],
+    ["linux", "x64", "@amdevz/adfc-linux-x64"],
+    ["linux", "arm64", "@amdevz/adfc-linux-arm64"],
+    ["darwin", "x64", "@amdevz/adfc-darwin-x64"],
+    ["darwin", "arm64", "@amdevz/adfc-darwin-arm64"],
+    ["win32", "x64", "@amdevz/adfc-win32-x64"],
+    ["win32", "arm64", "@amdevz/adfc-win32-arm64"],
   ];
   for (const [platform, arch, expected] of cases) {
     assert.equal(
@@ -33,7 +33,7 @@ test("linux resolves to the musl build regardless of libc", () => {
   // There is deliberately no libc dimension: the Linux binary is static, so
   // one package serves glibc and musl hosts alike.
   const spec = selectPlatform(PLATFORMS, "linux", "x64");
-  assert.equal(spec.packageName, "adfc-linux-x64");
+  assert.equal(spec.packageName, "@amdevz/adfc-linux-x64");
   assert.ok(!("libc" in spec), "runtime config should carry no libc field");
 });
 
@@ -61,7 +61,8 @@ test("unsupported arch on a supported os is still rejected", () => {
 test("locateBinary finds a sibling package layout", () => {
   // Mirrors node_modules/adfc/bin/adfc.js next to node_modules/adfc-linux-x64.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "adfc-locate-"));
-  const sibling = path.join(root, "adfc-linux-x64");
+  // Scoped packages nest: node_modules/@amdevz/adfc-linux-x64
+  const sibling = path.join(root, "@amdevz", "adfc-linux-x64");
   fs.mkdirSync(sibling, { recursive: true });
   fs.writeFileSync(path.join(sibling, "adfc"), "#!/bin/sh\ntrue\n");
 
@@ -83,7 +84,7 @@ test("a package present but missing its binary reads as not installed", () => {
   // Checking for the binary rather than the manifest is what turns a
   // half-installed package into a clear error here instead of a failure at exec.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "adfc-partial-"));
-  const sibling = path.join(root, "adfc-linux-x64");
+  const sibling = path.join(root, "@amdevz", "adfc-linux-x64");
   fs.mkdirSync(sibling, { recursive: true });
   fs.writeFileSync(path.join(sibling, "package.json"), "{}");
 
@@ -105,7 +106,7 @@ test("a package present but missing its binary reads as not installed", () => {
 
 test("locateBinary reports a missing package clearly", () => {
   assert.throws(
-    () => locateBinary({ packageName: "adfc-not-installed", binaryName: "adfc" }),
+    () => locateBinary({ packageName: "@amdevz/adfc-not-installed", binaryName: "adfc" }),
     /is not installed/,
   );
 });

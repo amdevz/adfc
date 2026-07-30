@@ -39,7 +39,9 @@ node "$ROOT/scripts/build-npm-packages.js" \
   --only "$TARGET"
 
 echo "==> packing tarballs"
-cd "$WORK/packages/adfc-linux-x64" && npm pack --quiet --pack-destination "$WORK" >/dev/null
+# Scoped packages nest under their scope directory, and npm pack names the
+# tarball with the scope flattened: @amdevz/adfc-linux-x64 -> amdevz-adfc-...
+cd "$WORK/packages/@amdevz/adfc-linux-x64" && npm pack --quiet --pack-destination "$WORK" >/dev/null
 cd "$WORK/packages/adfc" && npm pack --quiet --pack-destination "$WORK" >/dev/null
 
 echo "==> installing into a throwaway prefix"
@@ -50,7 +52,7 @@ npm init -y --scope=e2e >/dev/null 2>&1
 # --ignore-scripts is the load-bearing flag: it is the whole reason binaries
 # ship inside the platform tarball rather than being fetched on install.
 npm install --quiet --ignore-scripts --no-audit --no-fund \
-  "$WORK/adfc-linux-x64-$VERSION.tgz" "$WORK/adfc-$VERSION.tgz" >/dev/null
+  "$WORK/amdevz-adfc-linux-x64-$VERSION.tgz" "$WORK/adfc-$VERSION.tgz" >/dev/null
 
 BIN="$PREFIX/node_modules/.bin/adfc"
 echo "==> running the installed binary"
@@ -69,7 +71,7 @@ echo "$OUT" | jq -e '.type == "doc" and .content[0].type == "heading"' >/dev/nul
 }
 
 echo "==> verifying it resolved via the platform package"
-test -f "$PREFIX/node_modules/adfc-linux-x64/adfc" || {
+test -f "$PREFIX/node_modules/@amdevz/adfc-linux-x64/adfc" || {
   echo "FAIL: platform package binary missing"; exit 1
 }
 
