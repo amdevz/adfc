@@ -15,7 +15,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TAG: ${{ fromJson(inputs.plan).announcement_tag }}
-      VERSION: ${{ fromJson(inputs.plan).announcement_tag_is_implicit && '' || fromJson(inputs.plan).announcement_tag }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -77,6 +76,18 @@ jobs:
           set -euo pipefail
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
 
+          # Fail here, once, rather than as seven confusing 403s. A user scope
+          # can only be published by the matching account, and the token is what
+          # decides that — so the identity is logged even when it looks right,
+          # because a scope mismatch is otherwise diagnosed from permission
+          # errors on packages that do not exist yet.
+          if ! who=$(npm whoami 2>&1); then
+            echo "::error::npm rejected the token: $who"
+            exit 1
+          fi
+          echo "authenticated to npm as: $who"
+          echo "publishing under scope: @amdevz"
+
           publish() {
             local dir="$1"
             if out=$(cd "$dir" && npm publish --access public 2>&1); then
@@ -94,14 +105,12 @@ jobs:
             fi
           }
 
-          # Platform packages first. The entry package's optionalDependencies
-          # pin exact versions of these, so publishing it first would leave it
-          # briefly installable and broken.
           mapfile -t dirs < <(nix develop --command node -e "
             console.log(require('./scripts/build-npm-packages.js').packageDirs('npm/.output').join('\n'))")
-          # The entry package publishes last: its optionalDependencies pin
-          # exact versions of the platform packages, so the other order leaves
-          # it briefly installable and broken.
+
+          # The entry package publishes last: its optionalDependencies pin exact
+          # versions of the platform packages, so the other order leaves it
+          # briefly installable and broken.
           entry="npm/.output/@amdevz/adfc"
           for dir in "${dirs[@]}"; do
             [ "$dir" = "$entry" ] && continue
