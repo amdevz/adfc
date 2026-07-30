@@ -8,7 +8,7 @@ cargo-dist-version = "0.32.0"
 # every other consumer expects without extra tooling.
 unix-archive = ".tar.gz"
 ci = "github"
-# No installers: npm packaging is hand-rolled in scripts/build-npm-packages.mjs
+# No installers: npm packaging is hand-rolled in scripts/build-npm-packages.js
 # because dist's own npm installer downloads the binary from GitHub Releases
 # during `npm install`, which breaks under `npm ci --ignore-scripts`, offline
 # caches, and mirrored registries. Shell, PowerShell and Homebrew installers
@@ -17,6 +17,12 @@ installers = []
 # Building release artifacts on every pull request would add minutes to a check
 # that gates nothing; releases are cut from tags.
 pr-run-mode = "skip"
+# Registry publishing runs as dist-invoked reusable workflows, so dist owns the
+# ordering (release exists first) and release.yml stays generated.
+publish-jobs = ["./publish-crates", "./publish-npm"]
+# The first release is an -rc, and dist skips publish jobs for prereleases
+# unless told otherwise.
+publish-prereleases = true
 targets = [
   "x86_64-unknown-linux-musl",
   "aarch64-unknown-linux-musl",
