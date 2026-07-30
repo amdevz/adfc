@@ -18,6 +18,11 @@ on:
         required: true
         type: string
 
+# workflow_run runs in the context of the base repository, so it is worth being
+# explicit: reading releases is all this needs.
+permissions:
+  contents: read
+
 jobs:
   resolve:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}

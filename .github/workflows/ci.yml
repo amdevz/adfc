@@ -9,6 +9,11 @@ on:
   schedule:
     - cron: "0 6 * * 1"
 
+# Nothing here writes to the repository; pull requests from forks should get
+# no more than they need.
+permissions:
+  contents: read
+
 # Superseded runs on the same ref are pointless once a newer commit exists.
 # main is excluded: post-merge runs are the record of whether that commit is
 # good, so cancelling them would leave gaps in that history.
