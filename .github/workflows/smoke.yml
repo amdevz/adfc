@@ -62,7 +62,7 @@ jobs:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          actual=$(npx --yes "adfc@$VERSION" --version)
+          actual=$(npx --yes "@amdevz/adfc@$VERSION" --version)
           echo "got: $actual"
           [ "$actual" = "adfc $VERSION" ] || { echo "::error::expected 'adfc $VERSION'"; exit 1; }
       - name: Convert through the installed binary
@@ -72,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '# Title\n\nSome **bold** text.\n' > t.md
-          npx --yes "adfc@$VERSION" t.md | node -e "
+          npx --yes "@amdevz/adfc@$VERSION" t.md | node -e "
             let s=''; process.stdin.on('data',d=>s+=d).on('end',()=>{
               const d=JSON.parse(s);
               if (d.type!=='doc' || d.content[0].type!=='heading') { console.error(s); process.exit(1); }

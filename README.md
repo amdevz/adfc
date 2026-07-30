@@ -12,11 +12,13 @@ Markdown in, schema-valid ADF out. No network access, no configuration.
 **As a command:**
 
 ```sh
-npx adfc --version     # without installing
-npm i -g adfc          # globally
-npm i -D adfc          # as a project dev dependency
-cargo install adfc     # from crates.io
+npx @amdevz/adfc --version   # without installing
+npm i -g @amdevz/adfc        # globally
+npm i -D @amdevz/adfc        # as a project dev dependency
+cargo install adfc           # from crates.io
 ```
+
+The npm package is scoped, but the command it installs is `adfc`.
 
 The npm packages ship a prebuilt binary for Linux, macOS and Windows on x64 and
 arm64. Nothing is compiled or fetched during install, so `npm ci

@@ -99,8 +99,12 @@ jobs:
           # briefly installable and broken.
           mapfile -t dirs < <(nix develop --command node -e "
             console.log(require('./scripts/build-npm-packages.js').packageDirs('npm/.output').join('\n'))")
+          # The entry package publishes last: its optionalDependencies pin
+          # exact versions of the platform packages, so the other order leaves
+          # it briefly installable and broken.
+          entry="npm/.output/@amdevz/adfc"
           for dir in "${dirs[@]}"; do
-            [ "$(basename "$dir")" = "adfc" ] && continue
+            [ "$dir" = "$entry" ] && continue
             publish "$dir"
           done
-          publish npm/.output/adfc
+          publish "$entry"

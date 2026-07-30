@@ -10,7 +10,7 @@ const { execFileSync } = require("node:child_process");
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const SCRIPT = path.join(REPO_ROOT, "scripts", "build-npm-packages.js");
 const { PLATFORMS } = require("../platforms.js");
-const { packageDirs } = require("../build-npm-packages.js");
+const { packageDirs, ENTRY_PACKAGE } = require("../build-npm-packages.js");
 
 /** A scratch directory holding a fake plan and fake release archives. */
 function makeFixtures(version = "9.9.9") {
@@ -82,7 +82,7 @@ test("emits seven packages: one entry plus six platforms", () => {
   const out = run(f);
   const found = byName(out);
   assert.equal(Object.keys(found).length, 7, `got ${Object.keys(found).join(", ")}`);
-  assert.ok("adfc" in found);
+  assert.ok(ENTRY_PACKAGE in found, ENTRY_PACKAGE);
   for (const spec of PLATFORMS) assert.ok(spec.packageName in found, spec.packageName);
   fs.rmSync(f.root, { recursive: true, force: true });
 });
@@ -90,7 +90,7 @@ test("emits seven packages: one entry plus six platforms", () => {
 test("entry package pins all six platforms as exact optional dependencies", () => {
   const f = makeFixtures();
   const out = run(f);
-  const entry = manifest(out, "adfc");
+  const entry = manifest(out, ENTRY_PACKAGE);
 
   assert.equal(Object.keys(entry.optionalDependencies).length, 6);
   for (const spec of PLATFORMS) {
@@ -152,7 +152,7 @@ test("every package ships a LICENSE", () => {
 test("entry package ships the shim and its platform table", () => {
   const f = makeFixtures();
   const out = run(f);
-  const entryDir = path.join(out, "adfc");
+  const entryDir = path.join(out, ENTRY_PACKAGE);
   assert.ok(fs.existsSync(path.join(entryDir, "bin", "adfc.js")));
 
   const table = JSON.parse(
@@ -203,8 +203,11 @@ test("--only packages one platform but still lists all six as optional deps", ()
 
   assert.deepEqual(
     Object.keys(byName(out)).sort(),
-    ["adfc", PLATFORMS[0].packageName].sort(),
+    [ENTRY_PACKAGE, PLATFORMS[0].packageName].sort(),
   );
-  assert.equal(Object.keys(manifest(out, "adfc").optionalDependencies).length, 6);
+  assert.equal(
+    Object.keys(manifest(out, ENTRY_PACKAGE).optionalDependencies).length,
+    6,
+  );
   fs.rmSync(f.root, { recursive: true, force: true });
 });

@@ -19,6 +19,12 @@ const { PLATFORMS, runtimeConfig } = require("./platforms.js");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 
+// Everything ships under one scope, so a single scope-level npm token covers
+// the whole release. The command this installs is still `adfc`: the bin name in
+// a package manifest is independent of the package name, so `adfc` stays what a
+// user types and what the crate and binary are called.
+const ENTRY_PACKAGE = "@amdevz/adfc";
+
 function parseArgs(argv) {
   const args = {
     plan: null,
@@ -141,7 +147,7 @@ function writePlatformPackage(spec, version, artifactsDir, outDir) {
 }
 
 function writeEntryPackage(platforms, version, outDir) {
-  const dir = path.join(outDir, "adfc");
+  const dir = path.join(outDir, ENTRY_PACKAGE);
   fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
 
   fs.copyFileSync(
@@ -161,7 +167,7 @@ function writeEntryPackage(platforms, version, outDir) {
   );
 
   writeJson(path.join(dir, "package.json"), {
-    name: "adfc",
+    name: ENTRY_PACKAGE,
     version,
     description:
       "Convert Markdown to Atlassian Document Format (ADF), with JSON Schema validation",
@@ -223,7 +229,7 @@ function main() {
   // The entry package always lists all six, even on a partial build: its
   // optionalDependencies describe the release, not what happened to be packaged.
   writeEntryPackage(PLATFORMS, version, args.outDir);
-  console.log(`  adfc@${version} (entry)`);
+  console.log(`  ${ENTRY_PACKAGE}@${version} (entry)`);
   console.log(`\nwrote ${platforms.length + 1} package(s) to ${args.outDir}`);
 }
 
@@ -237,6 +243,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ENTRY_PACKAGE,
   readVersion,
   extractBinary,
   writePlatformPackage,
