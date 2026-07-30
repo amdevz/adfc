@@ -170,6 +170,11 @@ struct Builder {
     task_state: Option<&'static str>,
     /// Counter backing the localId every taskList/taskItem must carry.
     local_id: usize,
+    /// Nodes lifted out of a container that cannot hold them, paired with the
+    /// stack depth they belong at. They are emitted once that container
+    /// closes, so a hoisted table follows the list it came from instead of
+    /// jumping ahead of it.
+    hoisted: Vec<(usize, Value)>,
 }
 
 /// Whether ADF permits `child` directly inside `parent`.
@@ -271,6 +276,7 @@ impl Builder {
             image_alt: String::new(),
             task_state: None,
             local_id: 0,
+            hoisted: Vec::new(),
         }
     }
 
@@ -290,6 +296,13 @@ impl Builder {
     }
 
     fn pop(&mut self) {
+        self.pop_frame();
+        // Unconditional: pop_frame returns early for promoted and emptied
+        // nodes, and anything queued for this depth must still be emitted.
+        self.flush_hoisted();
+    }
+
+    fn pop_frame(&mut self) {
         let mut frame = self.stack.pop().expect("balanced events");
 
         // A list item carrying a checkbox becomes a taskItem, whose content is
@@ -398,7 +411,35 @@ impl Builder {
             .iter()
             .rposition(|frame| frame.node_type != "paragraph" && permits(frame.node_type, child))
             .unwrap_or(0);
-        self.stack[idx].content.push(node);
+
+        if idx == self.stack.len() - 1 {
+            self.stack[idx].content.push(node);
+        } else {
+            // The target is still open further up, so emitting now would place
+            // this ahead of everything between here and there. Queue it until
+            // that frame is the innermost one again.
+            self.hoisted.push((idx, node));
+        }
+    }
+
+    /// Emit anything queued for the frame that is now innermost.
+    fn flush_hoisted(&mut self) {
+        let depth = self.stack.len();
+        if depth == 0 {
+            return;
+        }
+        let mut ready = Vec::new();
+        self.hoisted.retain(|(idx, node)| {
+            if *idx == depth - 1 {
+                ready.push(node.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for node in ready {
+            self.stack[depth - 1].content.push(node);
+        }
     }
 
     /// Append a finished block node, degrading it if ADF forbids it here.
@@ -622,7 +663,10 @@ impl Builder {
 
     fn start(&mut self, tag: Tag) {
         match tag {
-            Tag::Paragraph => self.push("paragraph", None, false),
+            // A block of raw HTML gets a paragraph of its own. Without a
+            // frame it is treated as loose inline content and appended to
+            // whatever paragraph closed last, merging two blocks into one.
+            Tag::Paragraph | Tag::HtmlBlock => self.push("paragraph", None, false),
             Tag::Heading { level, .. } => {
                 let level = heading_level(level);
                 self.push("heading", Some(json!({ "level": level })), false);
@@ -667,7 +711,6 @@ impl Builder {
                 self.image_alt.clear();
             }
             Tag::FootnoteDefinition(_)
-            | Tag::HtmlBlock
             | Tag::MetadataBlock(_)
             | Tag::DefinitionList
             | Tag::DefinitionListTitle
@@ -680,6 +723,7 @@ impl Builder {
     fn end(&mut self, tag: TagEnd) {
         match tag {
             TagEnd::Paragraph
+            | TagEnd::HtmlBlock
             | TagEnd::Heading(_)
             | TagEnd::BlockQuote(_)
             | TagEnd::List(_)
@@ -744,7 +788,6 @@ impl Builder {
                 self.append_block_or_inline(node);
             }
             TagEnd::FootnoteDefinition
-            | TagEnd::HtmlBlock
             | TagEnd::MetadataBlock(_)
             | TagEnd::DefinitionList
             | TagEnd::DefinitionListTitle

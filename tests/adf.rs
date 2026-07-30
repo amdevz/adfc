@@ -540,3 +540,68 @@ fn a_table_inside_a_panel_is_hoisted_out() {
         .collect();
     assert!(top.contains(&"table"), "got {top:?}");
 }
+
+#[test]
+fn an_html_block_is_its_own_paragraph() {
+    // Inline content is appended to a trailing paragraph when one is open, but
+    // a block-level HTML run arriving after a closed paragraph was joining it,
+    // silently merging two blocks into one line.
+    let doc = convert("A paragraph here.\n\n<div>raw html</div>\n\nAnother paragraph.\n");
+    let blocks = doc["content"].as_array().unwrap();
+    assert_eq!(
+        blocks.len(),
+        3,
+        "expected three blocks, got {}",
+        blocks.len()
+    );
+    let first: String = blocks[0]["content"][0]["text"].as_str().unwrap().into();
+    assert_eq!(
+        first, "A paragraph here.",
+        "the html leaked into the paragraph"
+    );
+}
+
+#[test]
+fn a_hoisted_table_follows_the_container_it_came_from() {
+    // Hoisting happens while the enclosing container is still open, so pushing
+    // straight to the ancestor put the table before the list it belonged to
+    // and reversed the document's order.
+    let doc = convert("- item mentioning the table\n\n  | a |\n  | - |\n  | 1 |\n");
+    let types: Vec<&str> = doc["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        vec!["bulletList", "table"],
+        "the table should follow the list, not precede it"
+    );
+}
+
+#[test]
+fn a_hoisted_table_follows_the_panel_it_came_from() {
+    let doc = convert("> [!NOTE]\n> see below\n>\n> | a |\n> | - |\n> | 1 |\n");
+    let types: Vec<&str> = doc["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, vec!["panel", "table"]);
+}
+
+#[test]
+fn an_image_still_follows_the_text_that_introduced_it() {
+    // Media hoists out of its paragraph; the words around it must keep their
+    // position relative to it.
+    let doc = convert("Intro text ![d](attachment:d.svg)\n");
+    let types: Vec<&str> = doc["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, vec!["paragraph", "mediaSingle"]);
+}
