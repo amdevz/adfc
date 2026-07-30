@@ -34,8 +34,14 @@ jobs:
           gh release download "$TAG" --dir artifacts --pattern '*.tar.gz' --pattern '*.zip'
           ls -la artifacts
 
+      # Passed through the environment rather than interpolated into the
+      # script: the plan carries free text derived from the changelog, and a
+      # single apostrophe in it would close the shell quoting. One is present
+      # already, so this is a live defect, not a precaution.
       - name: Write the dist plan
-        run: printf '%s' '${{ inputs.plan }}' > plan.json
+        env:
+          PLAN: ${{ inputs.plan }}
+        run: printf '%s' "$PLAN" > plan.json
 
       - name: Generate the package trees
         run: nix develop --command node scripts/build-npm-packages.js --plan plan.json --artifacts-dir artifacts --out-dir npm/.output
