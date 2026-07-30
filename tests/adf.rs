@@ -340,3 +340,33 @@ fn inline_code_inside_em_and_strike_is_valid() {
     convert("~~struck `c`~~");
     convert("# Heading `c` with **bold `c`**");
 }
+
+#[test]
+fn empty_table_cell_gets_an_empty_paragraph() {
+    // ADF requires at least one block node in a cell (table_cell_content sets
+    // minItems 1), but a content-less paragraph is dropped on the way out, so
+    // an empty markdown cell would otherwise emit a cell with no content and
+    // the API rejects the whole table.
+    let doc = convert("| a | b |\n| - | - |\n| 1 |  |\n");
+    let body_row = &doc["content"][0]["content"][1];
+    let empty_cell = &body_row["content"][1];
+    assert_eq!(empty_cell["type"], "tableCell");
+    assert_eq!(
+        empty_cell["content"][0]["type"], "paragraph",
+        "empty cell must still hold a paragraph: {empty_cell}"
+    );
+}
+
+#[test]
+fn empty_table_header_gets_an_empty_paragraph() {
+    let doc = convert("| a |  |\n| - | - |\n| 1 | 2 |\n");
+    let header_row = &doc["content"][0]["content"][0];
+    let empty_header = &header_row["content"][1];
+    assert_eq!(empty_header["type"], "tableHeader");
+    assert_eq!(empty_header["content"][0]["type"], "paragraph");
+}
+
+#[test]
+fn a_table_of_entirely_empty_cells_is_still_valid() {
+    convert("|  |  |\n| - | - |\n|  |  |\n");
+}

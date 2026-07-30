@@ -287,6 +287,16 @@ impl Builder {
                 return;
             }
         }
+        // ADF requires at least one block node in a table cell. An empty
+        // markdown cell produces no events at all, so without this the cell
+        // closes empty and the API rejects the entire table. An empty
+        // paragraph is what Atlassian's own editor stores for a blank cell.
+        if matches!(frame.node_type, "tableCell" | "tableHeader") && frame.content.is_empty() {
+            frame
+                .content
+                .push(json!({"type": "paragraph", "content": []}));
+        }
+
         let mut node = Map::new();
         node.insert("type".into(), json!(frame.node_type));
         if let Some(attrs) = frame.attrs {
