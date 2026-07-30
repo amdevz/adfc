@@ -1,0 +1,109 @@
+# Verifies a published release the way a user would consume it.
+#
+# Triggered after Release finishes rather than on the `release: published`
+# event, because that event fires when the release is created — before the
+# registry publishes have run. Everything here consumes the real registries,
+# so it is the only check that can catch a packaging mistake that is invisible
+# until something is published.
+name: Smoke
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to verify, without the leading v
+        required: true
+        type: string
+
+jobs:
+  resolve:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT:-}" ]; then
+            version="$INPUT"
+          else
+            tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+            version="${tag#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "verifying $version"
+
+  npx:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: npx adfc
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual=$(npx --yes "adfc@$VERSION" --version)
+          echo "got: $actual"
+          [ "$actual" = "adfc $VERSION" ] || { echo "::error::expected 'adfc $VERSION'"; exit 1; }
+      - name: Convert through the installed binary
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '# Title\n\nSome **bold** text.\n' > t.md
+          npx --yes "adfc@$VERSION" t.md | node -e "
+            let s=''; process.stdin.on('data',d=>s+=d).on('end',()=>{
+              const d=JSON.parse(s);
+              if (d.type!=='doc' || d.content[0].type!=='heading') { console.error(s); process.exit(1); }
+              console.log('ADF looks right');
+            });"
+
+  cargo-install:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo install adfc
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo install adfc --version "$VERSION" --locked
+          actual=$(adfc --version)
+          [ "$actual" = "adfc $VERSION" ] || { echo "::error::got '$actual'"; exit 1; }
+
+  # musl was chosen over glibc so the Linux binary is genuinely static. This is
+  # what proves it: a glibc build would fail to execute here at all.
+  alpine-static:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'adfc-x86_64-unknown-linux-musl.tar.gz' --dir .
+          tar -xzf adfc-x86_64-unknown-linux-musl.tar.gz
+          find . -name adfc -type f -exec cp {} ./adfc-bin \;
+          chmod +x ./adfc-bin
+          printf '# Title\n' > t.md
+          docker run --rm -v "$PWD:/w" -w /w alpine:latest ./adfc-bin t.md
+          echo "static binary runs on musl-only Alpine"
