@@ -370,3 +370,173 @@ fn empty_table_header_gets_an_empty_paragraph() {
 fn a_table_of_entirely_empty_cells_is_still_valid() {
     convert("|  |  |\n| - | - |\n|  |  |\n");
 }
+
+// --- ADF container restrictions ---------------------------------------------
+//
+// ADF is stricter than Markdown about what may nest inside a container. These
+// cases are all valid Markdown, so they must degrade rather than produce a
+// document the API rejects. `convert` validates every result against the
+// schema, so simply reaching the assertions proves the degradation is legal.
+
+#[test]
+fn heading_in_a_blockquote_becomes_a_bold_paragraph() {
+    let doc = convert("> # Quoted heading\n");
+    let quote = &doc["content"][0];
+    assert_eq!(quote["type"], "blockquote");
+    assert_eq!(quote["content"][0]["type"], "paragraph");
+    assert_eq!(
+        quote["content"][0]["content"][0]["marks"][0]["type"], "strong",
+        "the heading's prominence is kept as emphasis: {quote}"
+    );
+    assert_eq!(quote["content"][0]["content"][0]["text"], "Quoted heading");
+}
+
+#[test]
+fn heading_in_a_list_item_becomes_a_bold_paragraph() {
+    let doc = convert("- item\n\n  # Nested heading\n");
+    let item = &doc["content"][0]["content"][0];
+    let types: Vec<&str> = item["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert!(!types.contains(&"heading"), "got {types:?}");
+    assert!(types.contains(&"paragraph"));
+}
+
+#[test]
+fn a_degraded_heading_leaves_an_inline_code_run_unbolded() {
+    // ADF treats code as near-exclusive: beside it a text node may carry only
+    // link and annotation. Bolting strong onto every run of a degraded heading
+    // therefore produced a node matching no inline variant at all, and the
+    // whole document was refused.
+    let doc = convert("> # a `c` b\n");
+    let runs = doc["content"][0]["content"][0]["content"]
+        .as_array()
+        .expect("the degraded heading is a paragraph of runs");
+    let code = runs
+        .iter()
+        .find(|run| run["text"] == "c")
+        .expect("the code span survives");
+    let marks: Vec<&str> = code["marks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(marks, ["code"], "code must not gain strong: {doc}");
+    // The prominence is still carried by the runs that can hold it.
+    assert_eq!(runs[0]["marks"][0]["type"], "strong", "got {doc}");
+}
+
+#[test]
+fn a_degraded_heading_in_a_list_item_leaves_inline_code_unbolded() {
+    let doc = convert("- # a `c` b\n");
+    let runs = doc["content"][0]["content"][0]["content"][0]["content"]
+        .as_array()
+        .expect("the degraded heading is a paragraph of runs");
+    let code = runs
+        .iter()
+        .find(|run| run["text"] == "c")
+        .expect("the code span survives");
+    assert_eq!(code["marks"].as_array().unwrap().len(), 1, "got {doc}");
+}
+
+#[test]
+fn nested_blockquotes_flatten_into_one() {
+    let doc = convert("> outer\n>\n> > inner\n");
+    let quote = &doc["content"][0];
+    assert_eq!(quote["type"], "blockquote");
+    let types: Vec<&str> = quote["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert!(
+        !types.contains(&"blockquote"),
+        "ADF forbids nesting: {types:?}"
+    );
+    // Both texts survive the flattening.
+    let rendered = quote.to_string();
+    assert!(rendered.contains("outer") && rendered.contains("inner"));
+}
+
+#[test]
+fn a_table_inside_a_list_item_is_hoisted_out() {
+    let doc = convert("- item\n\n  | a | b |\n  | - | - |\n  | 1 | 2 |\n");
+    let top: Vec<&str> = doc["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert!(top.contains(&"table"), "table should surface: {top:?}");
+}
+
+#[test]
+fn a_table_inside_a_blockquote_is_hoisted_out() {
+    let doc = convert("> | a | b |\n> | - | - |\n> | 1 | 2 |\n");
+    let top: Vec<&str> = doc["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert!(top.contains(&"table"), "got {top:?}");
+}
+
+#[test]
+fn a_panel_inside_a_list_item_unwraps() {
+    let doc = convert("- item\n\n  > [!NOTE]\n  > careful\n");
+    let item = &doc["content"][0]["content"][0];
+    let types: Vec<&str> = item["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert!(!types.contains(&"panel"), "got {types:?}");
+    assert!(item.to_string().contains("careful"), "text survives");
+}
+
+#[test]
+fn a_rule_inside_a_list_item_is_dropped() {
+    let doc = convert("- item\n\n  ---\n");
+    let item = &doc["content"][0]["content"][0];
+    let types: Vec<&str> = item["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert!(!types.contains(&"rule"), "got {types:?}");
+}
+
+#[test]
+fn a_task_list_inside_a_blockquote_becomes_a_bullet_list() {
+    // taskList is permitted in a list item but not in a blockquote.
+    let doc = convert("> - [ ] quoted task\n");
+    let quote = &doc["content"][0];
+    let types: Vec<&str> = quote["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert!(!types.contains(&"taskList"), "got {types:?}");
+    assert!(quote.to_string().contains("quoted task"));
+}
+
+#[test]
+fn a_table_inside_a_panel_is_hoisted_out() {
+    let doc = convert("> [!WARNING]\n> | a |\n> | - |\n> | 1 |\n");
+    let top: Vec<&str> = doc["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert!(top.contains(&"table"), "got {top:?}");
+}

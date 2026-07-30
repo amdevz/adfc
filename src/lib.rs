@@ -172,6 +172,45 @@ struct Builder {
     local_id: usize,
 }
 
+/// Whether ADF permits `child` directly inside `parent`.
+///
+/// Only the containers this converter emits are listed, and only the children
+/// it can produce. Taken from the vendored schema: a listItem and a blockquote
+/// are notably restrictive, and no container may hold a table.
+fn permits(parent: &str, child: &str) -> bool {
+    match parent {
+        "listItem" => matches!(
+            child,
+            "paragraph" | "bulletList" | "orderedList" | "codeBlock" | "taskList" | "mediaSingle"
+        ),
+        "blockquote" => matches!(
+            child,
+            "paragraph" | "bulletList" | "orderedList" | "codeBlock" | "mediaSingle"
+        ),
+        "panel" => matches!(
+            child,
+            "paragraph"
+                | "bulletList"
+                | "orderedList"
+                | "codeBlock"
+                | "taskList"
+                | "mediaSingle"
+                | "heading"
+                | "rule"
+        ),
+        "tableCell" | "tableHeader" => child != "table",
+        // Structural containers hold exactly one kind of child. Listing them
+        // matters for hoisting, which walks outwards looking for somewhere a
+        // node is legal and would otherwise stop at a list.
+        "bulletList" | "orderedList" => child == "listItem",
+        "taskList" => child == "taskItem",
+        "table" => child == "tableRow",
+        "tableRow" => matches!(child, "tableCell" | "tableHeader"),
+        // doc accepts every block this converter emits.
+        _ => true,
+    }
+}
+
 /// Map a GitHub alert marker (`> [!NOTE]`) to an ADF panelType.
 fn panel_type_for(marker: &str) -> Option<&'static str> {
     match marker {
@@ -189,6 +228,32 @@ fn alert_marker(text: &str) -> Option<&'static str> {
     let rest = text.trim_start().strip_prefix("[!")?;
     let marker = rest.split(']').next()?;
     panel_type_for(marker)
+}
+
+/// Carry a degraded heading's prominence into one of its runs.
+///
+/// Only a text node can hold the mark: `status`, `emoji` and the rest accept no
+/// marks at all, and ADF forbids `strong` beside `code`. Marking them anyway
+/// produced a node matching no inline variant, refusing the whole document —
+/// from Markdown as ordinary as `> # a ``c`` b`.
+fn emphasise(run: &mut Value) {
+    if run["type"] != "text" {
+        return;
+    }
+    let Some(marks) = run
+        .as_object_mut()
+        .map(|object| object.entry("marks").or_insert_with(|| json!([])))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    if marks
+        .iter()
+        .any(|mark| mark["type"] == "code" || mark["type"] == "strong")
+    {
+        return;
+    }
+    marks.push(json!({"type": "strong"}));
 }
 
 impl Builder {
@@ -272,7 +337,7 @@ impl Builder {
                 .into_iter()
                 .filter(|child| child["type"] == "taskItem")
                 .collect();
-            self.append_block_or_inline(json!({
+            self.append_block(json!({
                 "type": "taskList",
                 "attrs": {"localId": local_id},
                 "content": tasks,
@@ -287,6 +352,7 @@ impl Builder {
                 return;
             }
         }
+
         // ADF requires at least one block node in a table cell. An empty
         // markdown cell produces no events at all, so without this the cell
         // closes empty and the API rejects the entire table. An empty
@@ -297,13 +363,22 @@ impl Builder {
                 .push(json!({"type": "paragraph", "content": []}));
         }
 
+        // These require at least one child, and can be emptied by hoisting
+        // their only content out — a blockquote holding nothing but a table,
+        // for instance. Emitting the husk would fail validation, and it
+        // carries nothing, so drop it.
+        if matches!(frame.node_type, "blockquote" | "panel" | "listItem")
+            && frame.content.is_empty()
+        {
+            return;
+        }
         let mut node = Map::new();
         node.insert("type".into(), json!(frame.node_type));
         if let Some(attrs) = frame.attrs {
             node.insert("attrs".into(), attrs);
         }
         node.insert("content".into(), Value::Array(frame.content));
-        self.append_block_or_inline(Value::Object(node));
+        self.append_block(Value::Object(node));
     }
 
     /// Append a block-level node, hoisting it past any enclosing paragraph.
@@ -314,12 +389,99 @@ impl Builder {
     /// A paragraph left with no content is dropped by `pop`, so an image on its
     /// own line yields the block alone rather than trailing an empty paragraph.
     fn append_hoisted_block(&mut self, node: Value) {
+        let child = node["type"].as_str().unwrap_or_default();
+        // Walk out to the nearest ancestor that accepts this node. Stopping at
+        // the first non-paragraph is not enough: a table inside a list item
+        // would land straight back in the list item, which forbids it.
         let idx = self
             .stack
             .iter()
-            .rposition(|frame| frame.node_type != "paragraph")
-            .expect("the doc frame is never a paragraph");
+            .rposition(|frame| frame.node_type != "paragraph" && permits(frame.node_type, child))
+            .unwrap_or(0);
         self.stack[idx].content.push(node);
+    }
+
+    /// Append a finished block node, degrading it if ADF forbids it here.
+    ///
+    /// Markdown nests far more freely than ADF: a heading inside a blockquote,
+    /// a nested blockquote, a table inside a list item are all ordinary
+    /// Markdown and all illegal ADF. Emitting them anyway produces a document
+    /// the API rejects wholesale, so each is reshaped into something the
+    /// container accepts and the content is kept.
+    fn append_block(&mut self, node: Value) {
+        let parent = self
+            .stack
+            .last()
+            .map_or("doc", |frame| frame.node_type)
+            .to_owned();
+        let parent = if parent == "paragraph" {
+            // A block closing while a paragraph is open belongs to whatever
+            // encloses the paragraph.
+            self.stack
+                .iter()
+                .rev()
+                .find(|f| f.node_type != "paragraph")
+                .map_or("doc", |f| f.node_type)
+                .to_owned()
+        } else {
+            parent
+        };
+
+        let child = node["type"].as_str().unwrap_or_default().to_owned();
+        if permits(&parent, &child) {
+            self.append_block_or_inline(node);
+            return;
+        }
+
+        match child.as_str() {
+            // Carries no content of its own, so there is nothing to preserve.
+            "rule" => {}
+            // Keep the words and their prominence; ADF has no heading here.
+            "heading" => {
+                let mut para = node;
+                para["type"] = json!("paragraph");
+                para.as_object_mut().map(|o| o.remove("attrs"));
+                if let Some(runs) = para["content"].as_array_mut() {
+                    for run in runs.iter_mut() {
+                        emphasise(run);
+                    }
+                }
+                self.append_block_or_inline(para);
+            }
+            // Unwrap: the children are usually paragraphs the container allows,
+            // and each is re-checked on the way in.
+            "blockquote" | "panel" => {
+                if let Some(children) = node["content"].as_array() {
+                    for child in children.clone() {
+                        self.append_block(child);
+                    }
+                }
+            }
+            // A blockquote may hold a bullet list but not a task list.
+            "taskList" => {
+                let items: Vec<Value> = node["content"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .map(|item| {
+                                json!({
+                                    "type": "listItem",
+                                    "content": [{
+                                        "type": "paragraph",
+                                        "content": item["content"].clone(),
+                                    }],
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.append_block_or_inline(json!({"type": "bulletList", "content": items}));
+            }
+            // Everything else, tables included, is lifted to the nearest
+            // ancestor that accepts it rather than having its content dropped.
+            _ => self.append_hoisted_block(node),
+        }
     }
 
     /// Append a finished node to the current frame, wrapping inline nodes in a
@@ -451,10 +613,7 @@ impl Builder {
             }
             Event::SoftBreak => self.text(" "),
             Event::HardBreak => self.append_block_or_inline(json!({"type": "hardBreak"})),
-            Event::Rule => {
-                let frame = self.stack.last_mut().expect("non-empty stack");
-                frame.content.push(json!({"type": "rule"}));
-            }
+            Event::Rule => self.append_block(json!({"type": "rule"})),
             // Raw HTML has no ADF equivalent; keep it visible as plain text.
             Event::Html(t) | Event::InlineHtml(t) => self.text(t.trim_end_matches('\n')),
             Event::FootnoteReference(_) => {}
