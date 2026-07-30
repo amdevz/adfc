@@ -39,7 +39,11 @@ jobs:
           if [ -n "${INPUT:-}" ]; then
             version="$INPUT"
           else
-            tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+            # `gh release view` resolves GitHub's "latest release", which
+            # excludes prereleases — so on an rc it finds nothing. Listing
+            # returns newest-first including prereleases.
+            tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')
+            [ -n "$tag" ] || { echo "::error::no release found to verify"; exit 1; }
             version="${tag#v}"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -89,7 +93,10 @@ jobs:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          cargo install adfc --version "$VERSION" --locked
+          # Exact requirement: cargo will not resolve a prerelease from a
+          # caret requirement unless it names one, and this must work for both
+          # an rc and a final release.
+          cargo install adfc --version "=$VERSION" --locked
           actual=$(adfc --version)
           [ "$actual" = "adfc $VERSION" ] || { echo "::error::got '$actual'"; exit 1; }
 
