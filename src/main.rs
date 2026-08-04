@@ -22,8 +22,7 @@ struct Cli {
 
     /// Skip ADF schema validation
     //
-    // Conflicts with --schema: supplying a schema and then declining to use it
-    // is contradictory, and a silent precedence rule would let a scripted
+    // Conflicts with --schema: a silent precedence rule would let a scripted
     // invocation skip the check it asked for.
     #[arg(long, conflicts_with = "schema")]
     no_validate: bool,
@@ -49,22 +48,28 @@ fn main() -> ExitCode {
 
 fn run(cli: &Cli) -> Result<ExitCode> {
     let markdown = read_input(cli.file.as_deref())?;
-    let doc = adfc::markdown_to_adf(&markdown);
+    let converted = adfc::markdown_to_adf(&markdown);
 
-    // Validate before producing any output at all: a document that fails the
-    // schema must not reach stdout or land in the output file, or a downstream
-    // consumer would ship it regardless of the exit code.
+    // Validate before producing any output: a failing document must not reach
+    // stdout or the output file, or a consumer would ship it regardless of the
+    // exit code.
     if !cli.no_validate {
         match &cli.schema {
-            Some(path) => adfc::validate_against(&load_schema(path)?, &doc)
+            Some(path) => adfc::validate_against(&load_schema(path)?, &converted)
                 .with_context(|| format!("validating against {}", path.display()))?,
             // A refusal and a violation need different messages: the first says
             // the document was never checked, the second that it was and failed.
             // Reporting a refusal as a schema failure would send the reader
             // hunting for a defect that may not exist.
-            None => adfc::validate(&doc).map_err(|e| match e {
+            None => adfc::validate(&converted).map_err(|e| match e {
                 adfc::ValidationError::TooDeep { .. } => {
                     anyhow::anyhow!("{e}; pass --no-validate to convert it unchecked")
+                }
+                // Distinct from a schema failure: the document is well-formed
+                // ADF, it just does not contain what the author asked for. The
+                // text is still in the output as visible code.
+                adfc::ValidationError::UnhonouredEmbeds(_) => {
+                    anyhow::anyhow!("an adf embed could not be used:\n{e}")
                 }
                 adfc::ValidationError::Violations(_) => {
                     anyhow::anyhow!("output failed ADF schema validation:\n{e}")
@@ -73,7 +78,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         }
     }
 
-    write_output(cli.output.as_deref(), &doc)
+    write_output(cli.output.as_deref(), converted.doc())
 }
 
 fn read_input(file: Option<&Path>) -> Result<String> {

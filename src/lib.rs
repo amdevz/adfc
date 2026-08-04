@@ -7,64 +7,82 @@
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde_json::{Map, Value, json};
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// The official Atlassian ADF JSON Schema, compiled into the binary.
 ///
-/// Embedded rather than read from disk so a binary installed from a registry
-/// can validate its own output: an `npx adfc` or `cargo install adfc` user has
-/// no checkout, and a validation feature that needs a file path is unreachable
-/// for them. The vendored file stays the single source of truth, so refreshing
-/// it from <http://go.atlassian.com/adf-json-schema> needs no code change.
+/// Embedded rather than read from disk so an `npx adfc` or `cargo install adfc`
+/// user, who has no checkout, can still validate. Refresh it from
+/// <http://go.atlassian.com/adf-json-schema>; no code change is needed.
 pub const ADF_SCHEMA: &str = include_str!("../schema/adf-schema.json");
 
-/// The compiled validator for [`ADF_SCHEMA`], built once per process.
-///
-/// Private: `jsonschema` is a 0.x dependency, so exposing its types here would
-/// make every one of its breaking releases a breaking release of this crate.
-///
-/// Compiling this schema costs roughly 15ms and dominates the cost of a
-/// conversion, so it is cached: a caller validating many documents pays it
-/// once. A single CLI run validates once and sees no benefit, but nor does it
-/// pay anything extra.
+/// [`ADF_SCHEMA`] parsed, once per process. Several indexes derive from it.
 ///
 /// # Panics
 ///
-/// Panics if the embedded schema fails to parse or compile. That is a build
-/// defect rather than a runtime condition: the schema is fixed at compile
-/// time, so a failure would occur on every run and is caught by the test
-/// suite, which compiles the same validator.
+/// Panics if the embedded schema is not valid JSON, for the reason given on
+/// [`validator`].
+fn schema() -> &'static Value {
+    static SCHEMA: OnceLock<Value> = OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        serde_json::from_str(ADF_SCHEMA).expect("vendored ADF schema is valid JSON")
+    })
+}
+
+/// The `definitions` object of [`schema`], which every lookup here starts from.
+fn definitions() -> &'static Value {
+    &schema()["definitions"]
+}
+
+/// The compiled validator for [`ADF_SCHEMA`], built once per process.
+///
+/// Private: `jsonschema` is a 0.x dependency, so exposing its types would make
+/// each of its breaking releases a breaking release of this crate. Compiling
+/// costs ~15ms and dominates a conversion, hence the cache.
+///
+/// # Panics
+///
+/// Panics if the embedded schema fails to parse or compile — a build defect the
+/// test suite catches, not a runtime condition a caller could handle.
 fn validator() -> &'static jsonschema::Validator {
     static VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
-    VALIDATOR.get_or_init(|| {
-        // Panicking here is correct: the schema is embedded at compile time, so
-        // a failure is a build defect that every run would hit, not a runtime
-        // condition a caller could handle. The test suite compiles it too, so
-        // a bad vendored schema fails CI rather than reaching a user.
-        let schema: Value =
-            serde_json::from_str(ADF_SCHEMA).expect("vendored ADF schema is valid JSON");
-        jsonschema::validator_for(&schema).expect("vendored ADF schema compiles")
-    })
+    VALIDATOR
+        .get_or_init(|| jsonschema::validator_for(schema()).expect("vendored ADF schema compiles"))
+}
+
+/// The compiled validator for one schema definition, built at most once.
+///
+/// [`check_embedded_node`] runs per embedded node and a document may carry
+/// hundreds; compiling a root for each made 2000 inline embeds take 3.1s
+/// against 0.04s without them. `None` if the definition does not exist or did
+/// not compile, cached likewise.
+fn definition_validator(definition: &str) -> Option<Arc<jsonschema::Validator>> {
+    type Cache = Mutex<HashMap<String, Option<Arc<jsonschema::Validator>>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+
+    let cache = CACHE.get_or_init(Cache::default);
+    // The guarded value is a pure memo, so a panic elsewhere cannot have left
+    // it inconsistent; unwrapping would turn one unrelated panic into a panic
+    // on every later validation.
+    let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(cached) = cache.get(definition) {
+        return cached.clone();
+    }
+    let compiled = node_schema_named(definition)
+        .and_then(|root| jsonschema::validator_for(&root).ok())
+        .map(Arc::new);
+    cache.insert(definition.to_string(), compiled.clone());
+    compiled
 }
 
 /// The deepest document [`validate`] and [`validate_against`] will check.
 ///
-/// The ADF schema is a recursive union of `anyOf` branches, so the work of
-/// finding which branch a node matches compounds with nesting: validating a
-/// *valid* document 125 levels deep costs around 150 MB, and 41 KB of nested
-/// Markdown lists (roughly 800 levels) exhausted 2 GB and aborted. Since
-/// validation is on by default and [`markdown_to_adf`] cannot fail, an
+/// The ADF schema is a recursive `anyOf` union, so matching cost compounds with
+/// nesting: 41 KB of nested lists (~800 levels) exhausted 2 GB and aborted.
+/// Validation is on by default and [`markdown_to_adf`] cannot fail, so an
 /// unbounded check hands that abort to anyone converting untrusted Markdown.
-///
-/// Real documents sit far below this: a nested list inside a table cell inside
-/// a panel reaches roughly 25 levels, so this leaves several times that
-/// headroom while keeping the worst case bounded.
-///
-/// 128 is not arbitrary. It is `serde_json`'s own default recursion limit, so a
-/// document deeper than this cannot be read back by a default `serde_json`
-/// parser — including the one any consumer of this crate is likely to use.
-/// Refusing to validate past the point where the output stops being parseable
-/// costs nothing that was usable to begin with.
+/// 128 is `serde_json`'s default recursion limit; real documents reach ~25.
 pub const MAX_VALIDATION_DEPTH: usize = 128;
 
 /// Why a document could not be validated.
@@ -80,6 +98,11 @@ pub enum ValidationError {
         /// The limit that was exceeded, always [`MAX_VALIDATION_DEPTH`].
         limit: usize,
     },
+    /// An embed could not be honoured. Its text survives as a `codeBlock`,
+    /// which is valid ADF, so nothing in the document itself records that
+    /// something was asked for and not delivered. This does.
+    #[error("{}", .0.join("\n"))]
+    UnhonouredEmbeds(Vec<String>),
     /// The document was checked and violated the schema.
     #[error("{0}")]
     Violations(#[from] SchemaViolations),
@@ -98,43 +121,324 @@ impl SchemaViolations {
     }
 }
 
-/// Validate a document against the embedded [`ADF_SCHEMA`].
+/// A converted document, together with what the conversion found in embeds.
+///
+/// Paired so a caller cannot hold a document without its embed record: an embed
+/// whose JSON does not parse degrades to a `codeBlock`, which is valid ADF, so
+/// checking the document alone could never refuse it.
+#[derive(Debug, Clone)]
+pub struct Conversion {
+    doc: Value,
+    embeds: Vec<Embed>,
+}
+
+impl Conversion {
+    /// The converted ADF document.
+    #[must_use]
+    pub fn doc(&self) -> &Value {
+        &self.doc
+    }
+
+    /// Take the document, discarding the embed record.
+    ///
+    /// Named so that discarding the record is a visible decision.
+    #[must_use]
+    pub fn into_doc(self) -> Value {
+        self.doc
+    }
+
+    /// Every raw ADF embed the source contained, in document order.
+    #[must_use]
+    pub fn embeds(&self) -> &[Embed] {
+        &self.embeds
+    }
+}
+
+/// A raw ADF node embedded in the Markdown source.
+#[derive(Debug, Clone)]
+pub struct Embed {
+    line: usize,
+    outcome: EmbedOutcome,
+}
+
+/// What became of an embed's body.
+#[derive(Debug, Clone)]
+enum EmbedOutcome {
+    /// The nodes it carried, kept so validation can check each against its own
+    /// schema definition rather than against the document-wide union.
+    Nodes(Vec<Value>),
+    /// The body could not be read as ADF nodes at all.
+    Unparsed(String),
+}
+
+impl Embed {
+    /// The 1-based source line the embed's fence opens on.
+    ///
+    /// A violation path like `/attrs/color` says what is wrong but not where.
+    #[must_use]
+    pub fn line(&self) -> usize {
+        self.line
+    }
+
+    /// Why this embed could not become a node, when it could not.
+    ///
+    /// A failed embed is left in the document as visible text, so this is the
+    /// only record of it. [`validate`] refuses a document carrying one.
+    #[must_use]
+    pub fn failure(&self) -> Option<&str> {
+        match &self.outcome {
+            EmbedOutcome::Unparsed(why) => Some(why),
+            EmbedOutcome::Nodes(_) => None,
+        }
+    }
+}
+
+/// Validate a conversion against the embedded [`ADF_SCHEMA`].
 ///
 /// ```
-/// let doc = adfc::markdown_to_adf("# Title");
-/// assert!(adfc::validate(&doc).is_ok());
+/// let converted = adfc::markdown_to_adf("# Title");
+/// assert!(adfc::validate(&converted).is_ok());
+/// assert_eq!(converted.doc()["content"][0]["type"], "heading");
 /// ```
 ///
 /// # Errors
 ///
 /// [`ValidationError::TooDeep`] if the document nests beyond
-/// [`MAX_VALIDATION_DEPTH`], checked before any validation work so a
-/// pathologically nested document costs a walk rather than gigabytes.
-/// Otherwise every violation found, not just the first, so one run surfaces the
-/// whole problem rather than one layer of it.
-pub fn validate(doc: &Value) -> Result<(), ValidationError> {
+/// [`MAX_VALIDATION_DEPTH`], checked before any validation work. Otherwise
+/// every violation found, not just the first.
+pub fn validate(converted: &Conversion) -> Result<(), ValidationError> {
+    // Depth first, before anything validates a node. Checking embeds first
+    // would hand a pathologically nested embed straight to the schema, which
+    // is the unbounded cost [`MAX_VALIDATION_DEPTH`] exists to prevent.
+    guard_depth(&converted.doc)?;
+    guard_embeds(converted)?;
+    validate_document(&converted.doc)
+}
+
+/// Refuse a conversion whose embeds cannot be honoured, before the document is
+/// checked at all: a body that did not parse leaves a valid `codeBlock`, so the
+/// document alone would pass, and a node violating its own definition would be
+/// reported as a bare `anyOf` miss naming neither the node nor the field.
+fn guard_embeds(converted: &Conversion) -> Result<(), ValidationError> {
+    let mut failures = Vec::new();
+    for embed in &converted.embeds {
+        match &embed.outcome {
+            EmbedOutcome::Unparsed(why) => {
+                failures.push(format!("line {}: {why}", embed.line));
+            }
+            EmbedOutcome::Nodes(nodes) => {
+                for node in nodes {
+                    failures.extend(
+                        check_embedded_node(node)
+                            .into_iter()
+                            .map(|v| format!("line {}: {v}", embed.line)),
+                    );
+                }
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(ValidationError::UnhonouredEmbeds(failures))
+    }
+}
+
+/// Check one embedded node against the schema definition for its own type.
+///
+/// Targeting the definition rather than the document union turns an `anyOf`
+/// miss into `Additional properties are not allowed ('colour' was unexpected)`.
+fn check_embedded_node(node: &Value) -> Vec<String> {
+    // Bounded here too, not only at the document: an embed refused for its
+    // position never reaches the document, so guarding only there would leave
+    // this path unbounded.
+    let depth = nesting_depth(node);
+    if depth > MAX_VALIDATION_DEPTH {
+        return vec![format!(
+            "nests {depth} levels deep, over the limit of {MAX_VALIDATION_DEPTH}"
+        )];
+    }
+    let Some(node_type) = node["type"].as_str() else {
+        return vec!["an embedded node needs a \"type\" string".into()];
+    };
+    // A type's own definition can be laxer than the variants a container
+    // accepts: mediaSingle_node requires only `type` where the caption and full
+    // variants require `content`. Passing any one variant is enough.
+    let mut closest: Option<Vec<String>> = None;
+    for variant in variants_of(node_type) {
+        let Some(validator) = definition_validator(variant) else {
+            continue;
+        };
+        let errors: Vec<String> = validator
+            .iter_errors(node)
+            .map(|e| embed_violation(node_type, &e))
+            .collect();
+        if errors.is_empty() {
+            return Vec::new();
+        }
+        // Report the closest near-miss rather than every variant's complaints,
+        // which would bury the likely intent.
+        if closest
+            .as_ref()
+            .is_none_or(|best| errors.len() < best.len())
+        {
+            closest = Some(errors);
+        }
+    }
+    if let Some(errors) = closest {
+        return errors;
+    }
+
+    // No variants, or none that compiled. Falling through rather than
+    // reporting the node clean: it has not been checked yet.
+    let Some(definition) = node_definition(node_type) else {
+        return vec![format!("\"{node_type}\" is not an ADF node type")];
+    };
+    let Some(validator) = definition_validator(definition) else {
+        // The synthesized root failed to compile. That is a defect in this
+        // function rather than in the author's node, so say nothing and let
+        // document validation report what it can.
+        return Vec::new();
+    };
+    validator
+        .iter_errors(node)
+        .map(|e| embed_violation(node_type, &e))
+        .collect()
+}
+
+/// One violation of an embedded node, located when there is a location.
+///
+/// A failure of the node itself carries an empty instance path, so appending it
+/// unconditionally leaves the message trailing `at ` and pointing nowhere.
+fn embed_violation(node_type: &str, error: &jsonschema::ValidationError<'_>) -> String {
+    let path = error.instance_path.to_string();
+    if path.is_empty() {
+        format!("{node_type}: {error}")
+    } else {
+        format!("{node_type}: {error} at {path}")
+    }
+}
+
+/// The definition name of every stricter variant of a node type, if it has any.
+///
+/// A variant resolves to the same node type but adds constraints, such as
+/// `mediaSingle_full_node` requiring `content` where `mediaSingle_node` does
+/// not. Empty for a type with none, so the caller falls back to the base. Names
+/// rather than schemas, so each can be looked up in [`definition_validator`].
+fn variants_of(node_type: &str) -> &'static [String] {
+    static VARIANTS: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
+    let index = VARIANTS.get_or_init(|| {
+        let definitions = definitions();
+        let mut index: HashMap<String, Vec<String>> = HashMap::new();
+        let Some(entries) = definitions.as_object() else {
+            return index;
+        };
+        for name in entries.keys() {
+            // Only a variant, never the base: the base is the fallback and
+            // including it would let a lax definition pass on its own.
+            if !name.ends_with("_node") || definitions[name]["allOf"].as_array().is_none() {
+                continue;
+            }
+            if let Some(resolved) = type_of_definition(definitions, name, &mut Vec::new()) {
+                index.entry(resolved).or_default().push(name.clone());
+            }
+        }
+        index
+    });
+    index.get(node_type).map_or(&[], Vec::as_slice)
+}
+
+/// The definition describing a node type.
+///
+/// Usually `<type>_node`, but not always: `tableRow`, `tableCell` and
+/// `tableHeader` come from `table_row_node` and friends, so guessing the name
+/// reported three real ADF types as nonexistent. Derived from the schema.
+fn node_definition(node_type: &str) -> Option<&'static str> {
+    static INDEX: OnceLock<HashMap<String, String>> = OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        let mut index: HashMap<String, String> = HashMap::new();
+        let Some(entries) = definitions().as_object() else {
+            return index;
+        };
+        for (name, definition) in entries {
+            // A mark states its type the same way -- `em_mark` is `"em"` -- and
+            // must keep answering that it is not a node. The suffix is what
+            // separates the two.
+            if !name.ends_with("_node") {
+                continue;
+            }
+            let Some(declared) = definition["properties"]["type"]["enum"]
+                .as_array()
+                .and_then(|enumerated| enumerated.first())
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            // The conventional name wins wherever it exists, so `codeBlock`
+            // keeps `codeBlock_node` rather than `codeBlock_root_only_node`.
+            let conventional = name
+                .strip_suffix("_node")
+                .is_some_and(|stem| stem == declared);
+            let slot = index
+                .entry(declared.to_string())
+                .or_insert_with(|| name.clone());
+            if conventional {
+                slot.clone_from(name);
+            }
+        }
+        index
+    });
+    index.get(node_type).map(String::as_str)
+}
+
+/// A schema rooted at one node definition, carrying the vendored definitions so
+/// its internal references still resolve.
+///
+/// The `$schema` declaration is not optional: the vendored schema is draft-04
+/// and a synthesized root does not inherit it, so without it every node fails
+/// to compile rather than to validate.
+fn node_schema_named(definition: &str) -> Option<Value> {
+    let definitions = definitions();
+    definitions.get(definition)?;
+    Some(json!({
+        "$schema": "http://json-schema.org/draft-04/schema#",
+        "$ref": format!("#/definitions/{definition}"),
+        "definitions": definitions.clone(),
+    }))
+}
+
+/// Validate an ADF document that did not come from [`markdown_to_adf`].
+///
+/// Reach for [`validate`] after a conversion instead: it also accounts for the
+/// embeds the conversion found.
+///
+/// # Errors
+///
+/// The same conditions as [`validate`], minus anything embed-related.
+pub fn validate_document(doc: &Value) -> Result<(), ValidationError> {
     guard_depth(doc)?;
     Ok(validate_with(validator(), doc)?)
 }
 
 /// Validate a document against an arbitrary ADF schema.
 ///
-/// Backs the CLI's `--schema` override, which checks against a newer Atlassian
-/// revision than the vendored one without rebuilding. Takes the schema as a
-/// [`Value`] rather than a compiled validator so no `jsonschema` type appears
-/// in this crate's public API.
+/// Backs the CLI's `--schema` override. Takes a [`Value`] rather than a
+/// compiled validator so no `jsonschema` type appears in the public API.
 ///
 /// # Errors
 ///
 /// [`SchemaError::InvalidSchema`] if `schema` is not usable as a JSON Schema.
-/// Otherwise the same conditions as [`validate`]: the
-/// [`MAX_VALIDATION_DEPTH`] bound applies here too, since a caller-supplied
-/// schema is no cheaper to check against than the vendored one.
-pub fn validate_against(schema: &Value, doc: &Value) -> Result<(), SchemaError> {
+/// Otherwise the same conditions as [`validate`]; the [`MAX_VALIDATION_DEPTH`]
+/// bound applies here too.
+pub fn validate_against(schema: &Value, converted: &Conversion) -> Result<(), SchemaError> {
     let validator =
         jsonschema::validator_for(schema).map_err(|e| SchemaError::InvalidSchema(e.to_string()))?;
-    guard_depth(doc)?;
-    Ok(validate_with(&validator, doc).map_err(ValidationError::Violations)?)
+    guard_depth(&converted.doc)?;
+    // The same embed guard [`validate`] applies. Omitting it here made the
+    // `--schema` flag a way to accept a document whose embeds were never
+    // honoured, which is the hole [`Conversion`] exists to close.
+    guard_embeds(converted)?;
+    Ok(validate_with(&validator, &converted.doc).map_err(ValidationError::Violations)?)
 }
 
 /// The failure modes of validating against a caller-supplied schema.
@@ -193,34 +497,49 @@ fn validate_with(validator: &jsonschema::Validator, doc: &Value) -> Result<(), S
 
 /// URL scheme marking an image as an issue attachment rather than a remote one.
 ///
-/// `![alt](attachment:diagram.svg)` becomes a media node whose url is left as
-/// the placeholder; the tool that uploads the file rewrites it to the real
-/// attachment content URL. Keeping the scheme in the emitted document means the
-/// conversion stays a pure function with no network access or site credentials.
+/// `![alt](attachment:diagram.svg)` becomes a media node whose url stays the
+/// placeholder, for an uploader to rewrite. Keeps the conversion a pure
+/// function with no network access.
 pub const ATTACHMENT_SCHEME: &str = "attachment:";
 
 /// Convert a Markdown string into an ADF document (`{version: 1, type: "doc", ...}`).
 ///
-/// Never fails: unrepresentable constructs degrade rather than error
-/// (remote images become labeled links, raw HTML is kept as plain text).
-/// Images using the [`ATTACHMENT_SCHEME`] are the exception — they become
-/// real media nodes, since the uploader can resolve them.
+/// Never fails: unrepresentable constructs degrade rather than error (remote
+/// images become labeled links, raw HTML is kept as plain text). Images using
+/// the [`ATTACHMENT_SCHEME`] become real media nodes instead.
+///
+/// Returns a [`Conversion`] so an embed that could not be honoured travels with
+/// the document and [`validate`] can refuse it.
 ///
 /// ```
-/// let doc = adfc::markdown_to_adf("# Title");
+/// let converted = adfc::markdown_to_adf("# Title");
+/// let doc = converted.doc();
 /// assert_eq!(doc["content"][0]["type"], "heading");
 /// assert_eq!(doc["content"][0]["attrs"]["level"], 1);
 /// ```
 #[must_use]
-pub fn markdown_to_adf(markdown: &str) -> Value {
+pub fn markdown_to_adf(markdown: &str) -> Conversion {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    let parser = Parser::new_ext(markdown, options);
+    let parser = Parser::new_ext(markdown, options).into_offset_iter();
     let mut builder = Builder::new();
-    for event in parser {
-        builder.event(event);
+    for (event, range) in parser {
+        builder.event(event, range.start);
     }
-    builder.finish()
+    // Offsets become line numbers here, where the source is still in hand;
+    // carrying it into the builder would tie the builder to a lifetime it does
+    // not need.
+    let embeds = std::mem::take(&mut builder.embeds)
+        .into_iter()
+        .map(|(offset, outcome)| Embed {
+            line: line_of(markdown, offset),
+            outcome,
+        })
+        .collect();
+    Conversion {
+        doc: builder.finish(),
+        embeds,
+    }
 }
 
 /// A block container being assembled, with the ADF node kind it will become.
@@ -247,48 +566,112 @@ struct Builder {
     /// Counter backing the localId every taskList/taskItem must carry.
     local_id: usize,
     /// Nodes lifted out of a container that cannot hold them, paired with the
-    /// stack depth they belong at. They are emitted once that container
-    /// closes, so a hoisted table follows the list it came from instead of
-    /// jumping ahead of it.
+    /// stack depth they belong at. Emitted once that container closes, so a
+    /// hoisted table follows the list it came from instead of preceding it.
     hoisted: Vec<(usize, Value)>,
+    /// Raw ADF embeds in document order, each with the byte offset it was
+    /// written at. Travels out with the document so validation can refuse one
+    /// that could not be honoured; `markdown_to_adf` resolves the offsets.
+    embeds: Vec<(usize, EmbedOutcome)>,
+    /// Whether the open code block is an `adf` fence. Fences cannot nest, so a
+    /// single flag is enough.
+    in_adf_fence: bool,
+    /// Byte offset the open fence started at, resolved to a line once the walk
+    /// finishes.
+    fence_offset: usize,
+}
+
+/// Which node types each container may hold directly, taken from the schema.
+///
+/// Restating it in code would duplicate several hundred rules and drift the
+/// moment Atlassian revises them. A hand-written table also only ever covered
+/// the ~20 types this converter emits, not the 43 an embed can reach.
+fn containment() -> &'static HashMap<String, Vec<String>> {
+    static TABLE: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let definitions = definitions();
+        let mut table = HashMap::new();
+        let Some(entries) = definitions.as_object() else {
+            return table;
+        };
+        for name in entries.keys() {
+            let Some(parent) = type_of_definition(definitions, name, &mut Vec::new()) else {
+                continue;
+            };
+            // `content` is sometimes a $ref to a shared definition rather than
+            // an inline array, as for a table cell. Missing that indirection
+            // drops the container's rules and would let a table into a cell.
+            let content = &definitions[name]["properties"]["content"];
+            let content = content["$ref"]
+                .as_str()
+                .and_then(|r| r.strip_prefix("#/definitions/"))
+                .map_or(content, |target| &definitions[target]);
+            let items = &content["items"];
+            let refs = match items["anyOf"].as_array() {
+                Some(any) => any.clone(),
+                None if items["$ref"].is_string() => vec![items.clone()],
+                None => continue,
+            };
+            let mut children: Vec<String> = Vec::new();
+            let mut seen: Vec<String> = Vec::new();
+            for reference in &refs {
+                collect_child_types(definitions, reference, &mut children, &mut seen);
+            }
+            // Variants of one type each contribute what they allow; a node is
+            // permitted if any variant of its parent accepts it.
+            let slot: &mut Vec<String> = table.entry(parent).or_default();
+            for child in children {
+                if !slot.contains(&child) {
+                    slot.push(child);
+                }
+            }
+        }
+        table
+    })
+}
+
+/// Every node type one content reference admits, unions included.
+///
+/// A reference names either a node definition or a union of them: a paragraph
+/// states its content as `items.$ref` to `inline_node`, an `anyOf` with no type
+/// of its own. Resolving only the direct name leaves such a container with an
+/// empty entry, which forbids everything it actually holds.
+fn collect_child_types(
+    definitions: &Value,
+    reference: &Value,
+    out: &mut Vec<String>,
+    seen: &mut Vec<String>,
+) {
+    let Some(base) = reference["$ref"]
+        .as_str()
+        .and_then(|r| r.strip_prefix("#/definitions/"))
+    else {
+        return;
+    };
+    // Unions may name each other, so a definition is expanded once.
+    if seen.iter().any(|s| s == base) {
+        return;
+    }
+    seen.push(base.to_string());
+    if let Some(node_type) = type_of_definition(definitions, base, &mut Vec::new()) {
+        out.push(node_type);
+        return;
+    }
+    if let Some(branches) = definitions[base]["anyOf"].as_array() {
+        for branch in branches {
+            collect_child_types(definitions, branch, out, seen);
+        }
+    }
 }
 
 /// Whether ADF permits `child` directly inside `parent`.
-///
-/// Only the containers this converter emits are listed, and only the children
-/// it can produce. Taken from the vendored schema: a listItem and a blockquote
-/// are notably restrictive, and no container may hold a table.
 fn permits(parent: &str, child: &str) -> bool {
-    match parent {
-        "listItem" => matches!(
-            child,
-            "paragraph" | "bulletList" | "orderedList" | "codeBlock" | "taskList" | "mediaSingle"
-        ),
-        "blockquote" => matches!(
-            child,
-            "paragraph" | "bulletList" | "orderedList" | "codeBlock" | "mediaSingle"
-        ),
-        "panel" => matches!(
-            child,
-            "paragraph"
-                | "bulletList"
-                | "orderedList"
-                | "codeBlock"
-                | "taskList"
-                | "mediaSingle"
-                | "heading"
-                | "rule"
-        ),
-        "tableCell" | "tableHeader" => child != "table",
-        // Structural containers hold exactly one kind of child. Listing them
-        // matters for hoisting, which walks outwards looking for somewhere a
-        // node is legal and would otherwise stop at a list.
-        "bulletList" | "orderedList" => child == "listItem",
-        "taskList" => child == "taskItem",
-        "table" => child == "tableRow",
-        "tableRow" => matches!(child, "tableCell" | "tableHeader"),
-        // doc accepts every block this converter emits.
-        _ => true,
+    match containment().get(parent) {
+        Some(children) => children.iter().any(|c| c == child),
+        // A container the schema does not describe. Staying permissive keeps
+        // the hoisting walk working: it looks outwards for somewhere a node is
+        // legal, and a false here would stop it at the first unknown frame.
+        None => true,
     }
 }
 
@@ -301,6 +684,150 @@ fn panel_type_for(marker: &str) -> Option<&'static str> {
         "WARNING" => Some("warning"),
         "CAUTION" => Some("error"),
         _ => None,
+    }
+}
+
+/// Info string marking a fenced block as a raw ADF embed rather than source text.
+const ADF_FENCE: &str = "adf";
+
+/// Prefix marking an inline code span as a raw ADF embed.
+const INLINE_ADF_PREFIX: &str = "adf:";
+
+/// Resolve a schema definition name to the ADF node type it describes.
+///
+/// Variant definitions carry no `type` enum and extend a base through `allOf`,
+/// so `paragraph_with_no_marks_node` must be followed to `paragraph_node`. The
+/// `seen` set guards against a cycle.
+fn type_of_definition(definitions: &Value, name: &str, seen: &mut Vec<String>) -> Option<String> {
+    if seen.iter().any(|s| s == name) {
+        return None;
+    }
+    seen.push(name.to_string());
+    let definition = definitions.get(name)?;
+    if let Some(enumerated) = definition["properties"]["type"]["enum"].as_array()
+        && let Some(node_type) = enumerated.first().and_then(Value::as_str)
+    {
+        return Some(node_type.to_string());
+    }
+    let variants = definition["allOf"].as_array()?;
+    variants.iter().find_map(|variant| {
+        let reference = variant["$ref"].as_str()?;
+        let base = reference.strip_prefix("#/definitions/")?;
+        type_of_definition(definitions, base, seen)
+    })
+}
+
+/// Every node type ADF treats as inline, from the schema's own `inline_node`
+/// union. A hardcoded list would be wrong the moment Atlassian adds a type, and
+/// would silently place a new inline node as a block.
+fn inline_types() -> &'static [String] {
+    static INLINE: OnceLock<Vec<String>> = OnceLock::new();
+    INLINE.get_or_init(|| {
+        let definitions = definitions();
+        let mut types: Vec<String> = definitions["inline_node"]["anyOf"]
+            .as_array()
+            .map(|refs| {
+                refs.iter()
+                    .filter_map(|r| {
+                        let base = r["$ref"].as_str()?.strip_prefix("#/definitions/")?;
+                        type_of_definition(definitions, base, &mut Vec::new())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        types.sort();
+        types.dedup();
+        types
+    })
+}
+
+/// Whether ADF places this node type inside a paragraph rather than beside one.
+fn is_inline(node_type: &str) -> bool {
+    inline_types().iter().any(|t| t == node_type)
+}
+
+/// The 1-based line containing `offset`.
+fn line_of(source: &str, offset: usize) -> usize {
+    source[..offset.min(source.len())]
+        .bytes()
+        .filter(|b| *b == b'\n')
+        .count()
+        + 1
+}
+
+/// Parse an embed body into the nodes it carries.
+///
+/// Accepts a single node object or an array of them. Returns the reason as a
+/// string rather than a typed error: it is destined for a human-readable
+/// refusal, and `serde_json`'s parse position comes free.
+fn parse_embed(body: &str) -> Result<Vec<Value>, String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Err("the embed is empty".into());
+    }
+    let parsed: Value = serde_json::from_str(trimmed).map_err(|e| format!("invalid JSON: {e}"))?;
+    let nodes = match parsed {
+        Value::Array(items) => items,
+        node @ Value::Object(_) => vec![node],
+        other => {
+            return Err(format!(
+                "expected an ADF node object or an array of them, found {}",
+                kind_of(&other)
+            ));
+        }
+    };
+    if nodes.is_empty() {
+        return Err("the embed carries no nodes".into());
+    }
+    for node in &nodes {
+        if !node.is_object() {
+            return Err(format!(
+                "every embedded node must be an object, found {}",
+                kind_of(node)
+            ));
+        }
+        if !node["type"].is_string() {
+            return Err("every embedded node needs a \"type\" string".into());
+        }
+    }
+    Ok(nodes)
+}
+
+/// Whether the schema describes this as a node, as opposed to a mark or
+/// something invented. Checked before placement: a mark, or a typo, has no
+/// container anywhere, so reporting it as a nesting problem misleads.
+fn is_node_type(node_type: &str) -> bool {
+    node_definition(node_type).is_some()
+}
+
+/// Refuse any node the container forbids, naming both.
+fn reject_forbidden(container: &str, nodes: &[Value]) -> Result<(), String> {
+    for node in nodes {
+        let child = node["type"].as_str().unwrap_or_default();
+        if !is_node_type(child) {
+            return Err(format!("\"{child}\" is not an ADF node type"));
+        }
+        // An inline node is wrapped in a paragraph before it is appended, so
+        // the container sees that paragraph rather than the node itself.
+        let effective = if is_inline(child) { "paragraph" } else { child };
+        if !permits(container, effective) {
+            return Err(format!(
+                "{child} is not allowed inside {container}; ADF forbids that nesting"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Name a JSON value's kind for an error message.
+fn kind_of(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
     }
 }
 
@@ -353,6 +880,131 @@ impl Builder {
             task_state: None,
             local_id: 0,
             hoisted: Vec::new(),
+            embeds: Vec::new(),
+            in_adf_fence: false,
+            fence_offset: 0,
+        }
+    }
+
+    /// Take an inline `adf:` span: splice its node into the surrounding text,
+    /// or leave the span as visible code and record why it could not be used.
+    ///
+    /// Only inline nodes are accepted. Placing a block node here would break
+    /// the paragraph the author was writing, so it is refused, not relocated.
+    fn inline_embed(&mut self, body: &str, offset: usize) {
+        match parse_embed(body).and_then(|nodes| {
+            // A run of siblings has no single position inside a sentence. A
+            // one-element array still delivers one node, so it is accepted.
+            if nodes.len() > 1 {
+                return Err("an inline embed carries exactly one node".to_string());
+            }
+            Ok(nodes)
+        }) {
+            Ok(nodes)
+                if nodes
+                    .iter()
+                    .all(|n| n["type"].as_str().is_some_and(is_inline)) =>
+            {
+                self.embeds
+                    .push((offset, EmbedOutcome::Nodes(nodes.clone())));
+                for node in nodes {
+                    self.append_block_or_inline(node);
+                }
+            }
+            Ok(nodes) => {
+                let offender = nodes
+                    .iter()
+                    .find(|n| !n["type"].as_str().is_some_and(is_inline))
+                    .and_then(|n| n["type"].as_str())
+                    .unwrap_or("that node")
+                    .to_string();
+                // An unrecognised type is not a block node; it is not a node.
+                // Calling it a block would send the author to a fenced block
+                // that will fail in exactly the same way.
+                let why = if is_node_type(&offender) {
+                    format!(
+                        "{offender} is a block node and cannot sit inline; use a fenced adf block"
+                    )
+                } else {
+                    format!("\"{offender}\" is not an ADF node type")
+                };
+                self.embeds.push((offset, EmbedOutcome::Unparsed(why)));
+                self.keep_span_as_code(body);
+            }
+            Err(failure) => {
+                self.embeds.push((offset, EmbedOutcome::Unparsed(failure)));
+                self.keep_span_as_code(body);
+            }
+        }
+    }
+
+    /// Emit any inline nodes gathered from a fence as one paragraph of their
+    /// own, preserving the order they were written in.
+    fn flush_pending_inline(&mut self, pending: &mut Vec<Value>) {
+        if pending.is_empty() {
+            return;
+        }
+        let content = Value::Array(std::mem::take(pending));
+        self.append_block(json!({"type": "paragraph", "content": content}));
+    }
+
+    /// Leave an unusable inline embed visible, as the code span it was written
+    /// as. Losing what the author wrote is worse than emitting something
+    /// validation will refuse anyway.
+    fn keep_span_as_code(&mut self, body: &str) {
+        let node = json!({
+            "type": "text",
+            "text": format!("{INLINE_ADF_PREFIX}{body}"),
+            "marks": [{"type": "code"}],
+        });
+        self.append_block_or_inline(node);
+    }
+
+    /// Close an `adf` fence: splice its nodes in, or keep the text visible and
+    /// record why it could not be honoured.
+    ///
+    /// On a successful parse the codeBlock frame holding the author's text is
+    /// discarded and replaced by the nodes; on failure it is kept, because
+    /// losing what the author wrote is worse than emitting something invalid.
+    fn finish_adf_fence(&mut self, body: &str) {
+        match parse_embed(body).and_then(|nodes| {
+            // The frame below the fence is the real container. An embed names
+            // its node explicitly, so one the container forbids is refused
+            // rather than hoisted: relocating it would change what was asked.
+            let container = self
+                .stack
+                .get(self.stack.len().saturating_sub(2))
+                .map_or("doc", |f| f.node_type);
+            reject_forbidden(container, &nodes).map(|()| nodes)
+        }) {
+            Ok(nodes) => {
+                // Discard the frame rather than pop() it: its text was the
+                // source of the nodes, not content of its own.
+                self.stack.pop();
+                self.embeds
+                    .push((self.fence_offset, EmbedOutcome::Nodes(nodes.clone())));
+                // A fence is its own block, so an inline node in one gets a
+                // fresh paragraph; append_block_or_inline would let it join
+                // whatever paragraph closed last.
+                let mut pending: Vec<Value> = Vec::new();
+                for node in nodes {
+                    if node["type"].as_str().is_some_and(is_inline) {
+                        pending.push(node);
+                    } else {
+                        self.flush_pending_inline(&mut pending);
+                        self.append_block_or_inline(node);
+                    }
+                }
+                self.flush_pending_inline(&mut pending);
+                // pop() guarantees this on every exit path, and bypassing it
+                // above would strand anything queued for this depth.
+                self.flush_hoisted();
+            }
+            Err(failure) => {
+                self.embeds
+                    .push((self.fence_offset, EmbedOutcome::Unparsed(failure)));
+                self.pop();
+            }
         }
     }
 
@@ -386,29 +1038,27 @@ impl Builder {
         if frame.node_type == "listItem"
             && let Some(state) = self.task_state.take()
         {
-            {
-                let inline = frame
-                    .content
-                    .drain(..)
-                    .flat_map(|node| match node {
-                        Value::Object(mut obj) if obj["type"] == "paragraph" => obj
-                            .remove("content")
-                            .and_then(|c| match c {
-                                Value::Array(items) => Some(items),
-                                _ => None,
-                            })
-                            .unwrap_or_default(),
-                        other => vec![other],
-                    })
-                    .collect::<Vec<_>>();
-                let local_id = self.next_local_id();
-                self.append_block_or_inline(json!({
-                    "type": "taskItem",
-                    "attrs": {"localId": local_id, "state": state},
-                    "content": inline,
-                }));
-                return;
-            }
+            let inline = frame
+                .content
+                .drain(..)
+                .flat_map(|node| match node {
+                    Value::Object(mut obj) if obj["type"] == "paragraph" => obj
+                        .remove("content")
+                        .and_then(|c| match c {
+                            Value::Array(items) => Some(items),
+                            _ => None,
+                        })
+                        .unwrap_or_default(),
+                    other => vec![other],
+                })
+                .collect::<Vec<_>>();
+            let local_id = self.next_local_id();
+            self.append_block_or_inline(json!({
+                "type": "taskItem",
+                "attrs": {"localId": local_id, "state": state},
+                "content": inline,
+            }));
+            return;
         }
 
         // A list holding taskItems is a taskList, not a bullet/ordered list.
@@ -442,20 +1092,18 @@ impl Builder {
             }
         }
 
-        // ADF requires at least one block node in a table cell. An empty
-        // markdown cell produces no events at all, so without this the cell
-        // closes empty and the API rejects the entire table. An empty
-        // paragraph is what Atlassian's own editor stores for a blank cell.
+        // ADF requires at least one block node in a table cell, but an empty
+        // markdown cell produces no events, so the cell closed empty and the
+        // API rejected the whole table. Atlassian's editor stores this too.
         if matches!(frame.node_type, "tableCell" | "tableHeader") && frame.content.is_empty() {
             frame
                 .content
                 .push(json!({"type": "paragraph", "content": []}));
         }
 
-        // These require at least one child, and can be emptied by hoisting
-        // their only content out — a blockquote holding nothing but a table,
-        // for instance. Emitting the husk would fail validation, and it
-        // carries nothing, so drop it.
+        // These require at least one child and can be emptied by hoisting
+        // their only content out. Emitting the husk would fail validation and
+        // it carries nothing, so drop it.
         if matches!(frame.node_type, "blockquote" | "panel" | "listItem")
             && frame.content.is_empty()
         {
@@ -473,10 +1121,9 @@ impl Builder {
     /// Append a block-level node, hoisting it past any enclosing paragraph.
     ///
     /// ADF paragraphs accept inline content only, so a block emitted while a
-    /// paragraph frame is open (an image, which the parser always reports
-    /// inside one) has to become the paragraph's sibling instead of its child.
-    /// A paragraph left with no content is dropped by `pop`, so an image on its
-    /// own line yields the block alone rather than trailing an empty paragraph.
+    /// paragraph frame is open (an image, which the parser always reports inside
+    /// one) becomes the paragraph's sibling instead of its child. `pop` drops a
+    /// paragraph left empty, so no stray one trails the block.
     fn append_hoisted_block(&mut self, node: Value) {
         let child = node["type"].as_str().unwrap_or_default();
         // Walk out to the nearest ancestor that accepts this node. Stopping at
@@ -520,11 +1167,10 @@ impl Builder {
 
     /// Append a finished block node, degrading it if ADF forbids it here.
     ///
-    /// Markdown nests far more freely than ADF: a heading inside a blockquote,
-    /// a nested blockquote, a table inside a list item are all ordinary
-    /// Markdown and all illegal ADF. Emitting them anyway produces a document
-    /// the API rejects wholesale, so each is reshaped into something the
-    /// container accepts and the content is kept.
+    /// A heading inside a blockquote, a nested blockquote, a table inside a
+    /// list item are all ordinary Markdown and all illegal ADF. Emitting them
+    /// produces a document the API rejects wholesale, so each is reshaped into
+    /// something the container accepts and the content is kept.
     fn append_block(&mut self, node: Value) {
         let parent = self
             .stack
@@ -604,24 +1250,30 @@ impl Builder {
     /// Append a finished node to the current frame, wrapping inline nodes in a
     /// paragraph when the container requires block-level children.
     fn append_block_or_inline(&mut self, node: Value) {
-        let is_inline = matches!(
-            node["type"].as_str(),
-            Some("text" | "hardBreak" | "emoji" | "mention")
-        );
+        let is_inline = node["type"].as_str().is_some_and(is_inline);
         let frame = self.stack.last_mut().expect("non-empty stack");
         if is_inline && frame.wraps_inline {
-            // Append into a trailing paragraph, creating one if needed.
-            let needs_new = !matches!(
+            // Append into a trailing paragraph, creating one if needed. The
+            // test is for a content array, not merely a paragraph: an embed can
+            // leave `{"type": "paragraph"}` behind, which would drop the node.
+            let reusable = matches!(
                 frame.content.last(),
-                Some(last) if last["type"] == "paragraph"
+                Some(last) if last["type"] == "paragraph" && last["content"].is_array()
             );
-            if needs_new {
+            if !reusable {
                 frame
                     .content
                     .push(json!({"type": "paragraph", "content": []}));
             }
-            let para = frame.content.last_mut().unwrap();
-            para["content"].as_array_mut().unwrap().push(node);
+            // Infallible by construction: the trailing element is either the
+            // paragraph just pushed or one the check above confirmed.
+            if let Some(runs) = frame
+                .content
+                .last_mut()
+                .and_then(|para| para["content"].as_array_mut())
+            {
+                runs.push(node);
+            }
         } else {
             frame.content.push(node);
         }
@@ -631,8 +1283,7 @@ impl Builder {
     ///
     /// Runs as the first paragraph of a blockquote closes: the parser splits
     /// `[!NOTE]` across several text events, so the marker is only detectable
-    /// once the paragraph's runs are joined. On a match the enclosing
-    /// blockquote is retagged and the marker text is stripped.
+    /// once the runs are joined.
     fn try_promote_alert(&mut self, paragraph: &mut Frame) -> bool {
         let quote_idx = match self.stack.len().checked_sub(1) {
             Some(idx) if self.stack[idx].node_type == "blockquote" => idx,
@@ -695,9 +1346,9 @@ impl Builder {
         self.append_block_or_inline(Value::Object(node));
     }
 
-    fn event(&mut self, event: Event) {
+    fn event(&mut self, event: Event, offset: usize) {
         match event {
-            Event::Start(tag) => self.start(tag),
+            Event::Start(tag) => self.start(tag, offset),
             Event::End(tag) => self.end(tag),
             // Math extensions are not enabled, but if they ever are, the raw
             // expression text degrades to plain text like any other run.
@@ -712,12 +1363,17 @@ impl Builder {
                     self.image_alt.push_str(&t);
                     return;
                 }
+                // A code span prefixed `adf:` carries a raw node, so a badge
+                // can sit inside a sentence. Fences are always block-level and
+                // cannot do that.
+                if let Some(body) = t.strip_prefix(INLINE_ADF_PREFIX) {
+                    self.inline_embed(body, offset);
+                    return;
+                }
                 // ADF treats code as near-exclusive: alongside it a text node
-                // may carry only link and annotation. Emitting the enclosing
-                // strong/em/strike as well produces a node matching neither
-                // code_inline_node nor formatted_text_inline_node, which the
-                // API rejects. The emphasis is dropped rather than the code
-                // because code is what changes the meaning of the run.
+                // may carry only link and annotation, so emitting the enclosing
+                // strong/em/strike produces a node the API rejects. The emphasis
+                // goes rather than the code, which carries the meaning.
                 let mut marks: Vec<Value> = self
                     .marks
                     .iter()
@@ -737,7 +1393,7 @@ impl Builder {
         }
     }
 
-    fn start(&mut self, tag: Tag) {
+    fn start(&mut self, tag: Tag, offset: usize) {
         match tag {
             // A block of raw HTML gets a paragraph of its own. Without a
             // frame it is treated as loose inline content and appended to
@@ -749,6 +1405,16 @@ impl Builder {
             }
             Tag::BlockQuote(_) => self.push("blockquote", None, true),
             Tag::CodeBlock(kind) => {
+                // An `adf` fence carries a raw node, not source text. It still
+                // opens a codeBlock frame: the text accumulates the same way,
+                // and the frame is the fallback when the JSON does not parse.
+                self.in_adf_fence = matches!(
+                    &kind,
+                    CodeBlockKind::Fenced(lang) if lang.as_ref() == ADF_FENCE
+                );
+                if self.in_adf_fence {
+                    self.fence_offset = offset;
+                }
                 let attrs = match kind {
                     CodeBlockKind::Fenced(lang) if !lang.is_empty() => {
                         Some(json!({"language": lang.as_ref()}))
@@ -820,7 +1486,11 @@ impl Builder {
                 if !merged.is_empty() {
                     frame.content.push(json!({"type": "text", "text": merged}));
                 }
-                self.pop();
+                if std::mem::take(&mut self.in_adf_fence) {
+                    self.finish_adf_fence(&merged);
+                } else {
+                    self.pop();
+                }
             }
             TagEnd::TableHead => {
                 self.in_table_head = false;
@@ -834,12 +1504,10 @@ impl Builder {
                 let alt = std::mem::take(&mut self.image_alt);
 
                 if dest.starts_with(ATTACHMENT_SCHEME) {
-                    // An `external` media node, not a `file` one: a file node
-                    // additionally requires a media id and collection, which
-                    // Jira's REST API never exposes for an attachment. The url
-                    // stays the `attachment:` placeholder for the apply step to
-                    // rewrite once it has uploaded the file and knows its
-                    // content URL.
+                    // `external`, not `file`: a file node also requires a media
+                    // id and collection, which Jira's REST API never exposes for
+                    // an attachment. The url stays the placeholder for the apply
+                    // step to rewrite after upload.
                     let mut attrs = Map::new();
                     attrs.insert("type".into(), json!("external"));
                     attrs.insert("url".into(), json!(dest));
@@ -900,10 +1568,186 @@ mod tests {
     use super::*;
 
     #[test]
+    fn derived_containment_permits_everything_the_hardcoded_table_did() {
+        // Every rule the old hand-written table STATED must survive. Not that
+        // nothing changed: it ended in a permissive default, so containers it
+        // never named allowed everything and are now narrower. The one
+        // reachable case is pinned by the image-in-a-heading test.
+        let previous: &[(&str, &[&str])] = &[
+            (
+                "listItem",
+                &[
+                    "paragraph",
+                    "bulletList",
+                    "orderedList",
+                    "codeBlock",
+                    "taskList",
+                    "mediaSingle",
+                ],
+            ),
+            (
+                "blockquote",
+                &[
+                    "paragraph",
+                    "bulletList",
+                    "orderedList",
+                    "codeBlock",
+                    "mediaSingle",
+                ],
+            ),
+            (
+                "panel",
+                &[
+                    "paragraph",
+                    "bulletList",
+                    "orderedList",
+                    "codeBlock",
+                    "taskList",
+                    "mediaSingle",
+                    "heading",
+                    "rule",
+                ],
+            ),
+            ("bulletList", &["listItem"]),
+            ("orderedList", &["listItem"]),
+            ("taskList", &["taskItem"]),
+            ("table", &["tableRow"]),
+            ("tableRow", &["tableCell", "tableHeader"]),
+        ];
+        for (parent, children) in previous {
+            for child in *children {
+                assert!(
+                    permits(parent, child),
+                    "derived containment lost a rule: {parent} used to permit {child}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn derived_containment_still_forbids_a_table_anywhere() {
+        // No container this converter emits may hold a table, which is what
+        // makes hoisting necessary at all.
+        for parent in [
+            "listItem",
+            "blockquote",
+            "panel",
+            "tableCell",
+            "tableHeader",
+        ] {
+            assert!(
+                !permits(parent, "table"),
+                "{parent} must not permit a table"
+            );
+        }
+    }
+
+    #[test]
+    fn containment_expands_a_union_content_reference() {
+        // A heading and a paragraph state their content as `items.$ref` to
+        // `inline_node`, a union with no type of its own. Resolving only the
+        // direct name left both entries empty, which forbids everything.
+        assert!(permits("heading", "status"), "a heading holds inline nodes");
+        assert!(
+            permits("paragraph", "text"),
+            "a paragraph holds inline nodes"
+        );
+        // The rules hoisting depends on must survive that expansion: neither
+        // may hold a block node, or an image in a heading would stay there and
+        // the document would fail the schema.
+        assert!(!permits("heading", "mediaSingle"));
+        assert!(!permits("paragraph", "table"));
+    }
+
+    #[test]
+    fn every_container_the_converter_emits_carries_derived_rules() {
+        // A container the derivation cannot read falls back to permissive; one
+        // read as empty forbids everything. Both are silent, so the shapes are
+        // pinned here rather than discovered as mangled output.
+        for parent in [
+            "doc",
+            "paragraph",
+            "heading",
+            "blockquote",
+            "panel",
+            "listItem",
+            "bulletList",
+            "orderedList",
+            "taskList",
+            "table",
+            "tableRow",
+            "tableCell",
+            "tableHeader",
+            "codeBlock",
+        ] {
+            let children = containment().get(parent);
+            assert!(
+                children.is_some_and(|children| !children.is_empty()),
+                "{parent} has no derived rules: {children:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_table_node_types_are_recognised_as_node_types() {
+        // Their definitions are `table_row_node` and friends, so guessing
+        // `<type>_node` called three real ADF types nonexistent.
+        for node_type in ["tableRow", "tableCell", "tableHeader"] {
+            assert!(is_node_type(node_type), "{node_type} is an ADF node type");
+        }
+        // A mark states its type the same way and must still be refused, and
+        // so must a name that is simply wrong.
+        assert!(!is_node_type("em"), "em is a mark, not a node");
+        assert!(!is_node_type("statuz"), "statuz is nothing at all");
+    }
+
+    #[test]
+    fn containment_is_derived_once() {
+        assert!(std::ptr::eq(containment(), containment()));
+    }
+
+    #[test]
     fn embedded_schema_parses() {
         let schema: Value =
             serde_json::from_str(ADF_SCHEMA).expect("embedded schema is valid JSON");
         assert_eq!(schema["$schema"], "http://json-schema.org/draft-04/schema#");
+    }
+
+    #[test]
+    fn the_schema_is_parsed_once() {
+        assert!(std::ptr::eq(schema(), schema()));
+    }
+
+    #[test]
+    fn a_definition_validator_is_compiled_once() {
+        // Compiling a root per embedded node made 2000 inline embeds take
+        // 3.1s against 0.04s for the same document without them.
+        let first = definition_validator("status_node").expect("status_node is a definition");
+        let second = definition_validator("status_node").expect("status_node is a definition");
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn a_definition_that_does_not_exist_stays_a_miss() {
+        // The negative result is cached too, so a repeated miss must keep
+        // answering None rather than being recompiled into something.
+        assert!(definition_validator("statuz_node").is_none());
+        assert!(definition_validator("statuz_node").is_none());
+    }
+
+    #[test]
+    fn every_variant_of_a_type_compiles() {
+        // A variant that fails to compile is skipped silently, which would
+        // quietly reduce embed checking to the base definition — the laxer
+        // check this function exists to replace.
+        let variants = variants_of("mediaSingle");
+        assert!(!variants.is_empty(), "mediaSingle has stricter variants");
+        for variant in variants {
+            assert!(
+                definition_validator(variant).is_some(),
+                "{variant} must compile"
+            );
+        }
     }
 
     #[test]
@@ -916,8 +1760,8 @@ mod tests {
 
     #[test]
     fn validate_accepts_converted_doc() {
-        let doc = markdown_to_adf("# Title\n\nSome **bold** text.");
-        assert!(validate(&doc).is_ok());
+        let converted = markdown_to_adf("# Title\n\nSome **bold** text.");
+        assert!(validate(&converted).is_ok());
     }
 
     #[test]
@@ -932,7 +1776,7 @@ mod tests {
                 "content": [{"type": "text", "text": "nope"}],
             }],
         });
-        assert!(validate(&doc).is_err());
+        assert!(validate_document(&doc).is_err());
     }
 
     #[test]
@@ -941,7 +1785,7 @@ mod tests {
             {"type": "heading", "attrs": {"level": 99}, "content": [{"type": "text", "text": "a"}]},
             {"type": "heading", "attrs": {"level": 42}, "content": [{"type": "text", "text": "b"}]},
         ]});
-        let err = validate(&doc).expect_err("invalid doc must fail validation");
+        let err = validate_document(&doc).expect_err("invalid doc must fail validation");
         let rendered = err.to_string();
         assert!(rendered.lines().count() >= 2, "got: {rendered}");
     }
@@ -951,14 +1795,14 @@ mod tests {
         let doc = json!({"version": 1, "type": "doc", "content": [
             {"type": "heading", "attrs": {"level": 99}, "content": [{"type": "text", "text": "a"}]},
         ]});
-        let err = validate(&doc).expect_err("invalid doc must fail validation");
+        let err = validate_document(&doc).expect_err("invalid doc must fail validation");
         assert!(err.to_string().contains("/content/0"), "got: {err}");
     }
 
     #[test]
     fn empty_document_is_valid() {
-        let doc = markdown_to_adf("");
-        assert_eq!(doc["content"], json!([]));
-        assert!(validate(&doc).is_ok());
+        let converted = markdown_to_adf("");
+        assert_eq!(converted.doc()["content"], json!([]));
+        assert!(validate(&converted).is_ok());
     }
 }

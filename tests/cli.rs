@@ -2,13 +2,9 @@
 
 //! CLI behaviour, driven against the real binary.
 //!
-//! Gated on the feature that builds the binary: without it there is nothing to
-//! spawn, and `CARGO_BIN_EXE_adfc` is not defined. The tests ship in the crate,
-//! so a consumer running the suite with default features off would otherwise
-//! see every case in this file fail.
-//!
-//! Uses `CARGO_BIN_EXE_adfc` and `std::process::Command` rather than a test
-//! harness crate: the binary is what ships, and this needs no dependency.
+//! Gated on the feature that builds the binary: without it `CARGO_BIN_EXE_adfc`
+//! is undefined, and the tests ship in the crate, so a consumer building without
+//! default features would see every case here fail.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -28,15 +24,10 @@ fn run(args: &[&str], stdin: &str) -> Run {
         .stderr(Stdio::piped())
         .spawn()
         .expect("binary spawns");
-    // Writing stdin is best-effort. Plenty of runs here never read it: clap
-    // rejects a usage error and exits before `read_input` is reached, and a run
-    // given a FILE argument ignores stdin entirely. In both cases the child
-    // closes the pipe and this write gets EPIPE, which means the binary did its
-    // job — not that the test failed.
-    //
-    // Whether the write lands before the child exits is a race, and a fast
-    // machine usually wins it. Anything larger than the 64KB pipe buffer
-    // loses it every time.
+    // Best-effort: plenty of runs never read stdin (clap exits on a usage
+    // error, a FILE argument ignores it), so the child closes the pipe and this
+    // gets EPIPE — which means the binary did its job, not that the test
+    // failed. Anything larger than the 64KB pipe buffer loses that race.
     let mut stdin_handle = child.stdin.take().expect("stdin piped");
     if let Err(e) = stdin_handle.write_all(stdin.as_bytes()) {
         assert_eq!(
@@ -213,7 +204,7 @@ fn e2e_stdin_to_stdout_validated() {
 
     let doc: serde_json::Value = serde_json::from_str(&r.stdout).expect("stdout is JSON");
     // Validated twice over: once by the binary, once here against the library.
-    assert!(adfc::validate(&doc).is_ok());
+    assert!(adfc::validate_document(&doc).is_ok());
     assert_eq!(doc["content"][0]["type"], "heading");
 }
 
@@ -266,7 +257,7 @@ fn writes_named_output_file() {
 
     let written = std::fs::read_to_string(&out).expect("output file exists");
     let doc: serde_json::Value = serde_json::from_str(&written).expect("file is JSON");
-    assert!(adfc::validate(&doc).is_ok());
+    assert!(adfc::validate_document(&doc).is_ok());
 }
 
 #[test]
@@ -362,7 +353,7 @@ fn e2e_file_in_file_out() {
     let doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out).expect("file exists"))
             .expect("file is JSON");
-    assert!(adfc::validate(&doc).is_ok());
+    assert!(adfc::validate_document(&doc).is_ok());
 }
 
 #[test]
@@ -370,7 +361,7 @@ fn e2e_file_in_stdout_out() {
     let r = run(&[&fixture("valid.md")], "");
     assert_eq!(r.code, 0);
     let doc: serde_json::Value = serde_json::from_str(&r.stdout).expect("stdout is JSON");
-    assert!(adfc::validate(&doc).is_ok());
+    assert!(adfc::validate_document(&doc).is_ok());
 }
 
 #[test]
@@ -451,13 +442,10 @@ fn deeply_nested_input_is_refused_rather_than_exhausting_memory() {
 
 #[test]
 fn no_validate_converts_deeply_nested_input() {
-    // The bound limits checking, not converting: skipping validation must still
-    // produce the document.
-    //
-    // Asserted as text rather than by parsing it back, because serde_json's own
-    // default recursion limit is 128 — the same depth MAX_VALIDATION_DEPTH
-    // allows — so no default parser can read output this deep. That is the
-    // reason the limit sits where it does.
+    // The bound limits checking, not converting. Asserted as text rather than
+    // parsed back: serde_json's default recursion limit is 128, the same depth
+    // MAX_VALIDATION_DEPTH allows, so no default parser can read output this
+    // deep.
     let r = run(&["--no-validate"], &nested_list_markdown(200));
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert!(
@@ -465,4 +453,182 @@ fn no_validate_converts_deeply_nested_input() {
         "should still emit a document, got: {}",
         &r.stdout[..r.stdout.len().min(80)]
     );
+}
+
+// --- adf embeds end to end --------------------------------------------------
+
+/// A fenced `adf` block carrying `body`.
+fn adf_fence(body: &str) -> String {
+    format!("```adf\n{body}\n```\n")
+}
+
+#[test]
+fn cli_converts_a_block_embed() {
+    let r = run(&[], &adf_fence(r#"{"type":"rule"}"#));
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    let doc: serde_json::Value = serde_json::from_str(&r.stdout).expect("stdout is JSON");
+    assert_eq!(doc["content"][0]["type"], "rule");
+    assert!(adfc::validate_document(&doc).is_ok());
+}
+
+#[test]
+fn cli_refuses_a_malformed_embed() {
+    let r = run(&[], &adf_fence(r#"{"type":"status",}"#));
+    assert_ne!(r.code, 0, "a malformed embed must fail the run");
+    assert!(
+        r.stderr.contains("adf embed"),
+        "stderr should say an embed was the problem: {}",
+        r.stderr
+    );
+    // Same contract as a schema violation: a document that was not honoured
+    // must not reach a downstream consumer regardless of the exit code.
+    assert!(
+        r.stdout.is_empty(),
+        "refused run must emit nothing, got: {}",
+        r.stdout
+    );
+}
+
+#[test]
+fn cli_no_validate_converts_a_malformed_embed() {
+    // The gate is validation, not conversion: skipping it still produces the
+    // document, with the author's text preserved as visible code.
+    let r = run(&["--no-validate"], &adf_fence(r#"{"type":"status",}"#));
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    let doc: serde_json::Value = serde_json::from_str(&r.stdout).expect("stdout is JSON");
+    assert_eq!(doc["content"][0]["type"], "codeBlock");
+}
+
+// --- located embed errors end to end ----------------------------------------
+
+#[test]
+fn cli_reports_the_field_and_line_for_a_bad_attribute() {
+    let r = run(
+        &[],
+        "intro\n\n```adf\n{\"type\":\"status\",\"attrs\":{\"text\":\"Done\",\"colour\":\"green\"}}\n```\n",
+    );
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("line 3"), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("'colour' was unexpected"),
+        "stderr: {}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("\"color\" is a required property"),
+        "stderr: {}",
+        r.stderr
+    );
+    assert!(r.stdout.is_empty(), "nothing may reach stdout");
+}
+
+#[test]
+fn cli_lists_allowed_values_for_a_bad_enum() {
+    let r = run(
+        &[],
+        "```adf\n{\"type\":\"status\",\"attrs\":{\"text\":\"Done\",\"color\":\"orange\"}}\n```\n",
+    );
+    assert_ne!(r.code, 0);
+    assert!(
+        r.stderr.contains("\"orange\" is not one of"),
+        "stderr: {}",
+        r.stderr
+    );
+    assert!(r.stderr.contains("neutral"), "stderr: {}", r.stderr);
+}
+
+#[test]
+fn cli_names_an_unknown_node_type() {
+    let r = run(&[], "```adf\n{\"type\":\"statuz\"}\n```\n");
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("statuz"), "stderr: {}", r.stderr);
+    assert!(
+        !r.stderr.contains("is not valid under any of the schemas"),
+        "must not fall back to the union message: {}",
+        r.stderr
+    );
+}
+
+// --- inline embeds end to end -----------------------------------------------
+
+const STATUS_JSON: &str = r#"{"type":"status","attrs":{"text":"Done","color":"green"}}"#;
+
+#[test]
+fn cli_renders_a_status_badge_from_a_fence() {
+    let r = run(&[], &format!("```adf\n{STATUS_JSON}\n```\n"));
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    let doc: serde_json::Value = serde_json::from_str(&r.stdout).expect("stdout is JSON");
+    assert_eq!(doc["content"][0]["type"], "paragraph");
+    assert_eq!(doc["content"][0]["content"][0]["type"], "status");
+}
+
+#[test]
+fn cli_renders_a_status_badge_inside_a_sentence() {
+    let r = run(
+        &[],
+        &format!("The build is `adf:{STATUS_JSON}` and shipping.\n"),
+    );
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    let doc: serde_json::Value = serde_json::from_str(&r.stdout).expect("stdout is JSON");
+    let blocks = doc["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 1, "the badge must not break the paragraph");
+    let types: Vec<&str> = blocks[0]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, vec!["text", "status", "text"]);
+}
+
+#[test]
+fn cli_refuses_a_block_node_in_an_inline_span() {
+    let r = run(&[], "text `adf:{\"type\":\"rule\"}` more\n");
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("rule"), "stderr: {}", r.stderr);
+    assert!(r.stdout.is_empty(), "nothing may reach stdout");
+}
+
+// --- containment end to end -------------------------------------------------
+
+const TABLE_JSON: &str = r#"{"type":"table","content":[{"type":"tableRow","content":[{"type":"tableCell","content":[{"type":"paragraph","content":[{"type":"text","text":"x"}]}]}]}]}"#;
+
+#[test]
+fn cli_refuses_an_embedded_table_in_a_panel() {
+    let md = format!("> [!NOTE]\n> see below\n>\n> ```adf\n> {TABLE_JSON}\n> ```\n");
+    let r = run(&[], &md);
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("table"), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("panel"), "stderr: {}", r.stderr);
+    assert!(r.stdout.is_empty(), "nothing may reach stdout");
+}
+
+#[test]
+fn cli_still_hoists_a_markdown_table_from_a_panel() {
+    // The asymmetry, proven end to end: Markdown-derived content still moves,
+    // because Markdown cannot express ADF's nesting rules.
+    let r = run(
+        &[],
+        "> [!NOTE]\n> see below\n>\n> | a |\n> | - |\n> | 1 |\n",
+    );
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    let doc: serde_json::Value = serde_json::from_str(&r.stdout).expect("stdout is JSON");
+    let types: Vec<&str> = doc["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, vec!["panel", "table"]);
+}
+
+#[test]
+fn cli_converts_an_array_embed() {
+    let r = run(
+        &[],
+        "```adf\n[{\"type\":\"rule\"},{\"type\":\"rule\"}]\n```\n",
+    );
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    let doc: serde_json::Value = serde_json::from_str(&r.stdout).expect("stdout is JSON");
+    assert_eq!(doc["content"].as_array().unwrap().len(), 2);
 }

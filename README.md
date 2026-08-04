@@ -66,16 +66,19 @@ failure; `2` usage error.
 ## Library
 
 ```rust
-let doc = adfc::markdown_to_adf("# Title\n\nSome **bold** text.");
-adfc::validate(&doc)?;
+let converted = adfc::markdown_to_adf("# Title\n\nSome **bold** text.");
+adfc::validate(&converted)?;
 
-// doc is a serde_json::Value, ready to PUT as an issue description.
-println!("{doc}");
+// The document is a serde_json::Value, ready to PUT as an issue description.
+println!("{}", converted.doc());
 ```
 
 `markdown_to_adf` cannot fail: constructs with no ADF equivalent degrade rather
-than error. `validate` checks a document against the embedded schema, and
-`validate_against` checks it against one you supply.
+than error. It returns a `Conversion` rather than the document alone, so
+anything the conversion could not honour travels with the document and
+`validate` can refuse it. `validate` checks a conversion against the embedded
+schema, `validate_against` checks it against one you supply, and
+`validate_document` checks an ADF document that came from somewhere else.
 
 ## Supported Markdown
 
@@ -97,6 +100,38 @@ than error. `validate` checks a document against the embedded schema, and
 GitHub alerts map to panel types: `NOTE` → `note`, `TIP` → `success`,
 `IMPORTANT` → `info`, `WARNING` → `warning`, `CAUTION` → `error`. A blockquote
 without a marker stays a `blockquote`.
+
+## Raw ADF embeds
+
+Markdown cannot spell every ADF node. Where it cannot, write the node itself.
+
+A fenced block with the `adf` info string carries one node, or an array of
+them, and becomes those nodes in place:
+
+````markdown
+```adf
+{"type": "status", "attrs": {"text": "Done", "color": "green"}}
+```
+````
+
+A code span prefixed `adf:` carries exactly one inline node, so a badge can sit
+inside a sentence:
+
+```markdown
+The build is `adf:{"type":"status","attrs":{"text":"Done","color":"green"}}`.
+```
+
+An embed is placed where it was written and never relocated: Markdown-authored
+content hoists out of a container ADF forbids it in, because Markdown cannot
+express ADF's nesting rules, but an embed names its node explicitly and moving
+it would change what was asked for. A node its container forbids is refused
+instead.
+
+An embed that cannot be honoured — malformed JSON, an unknown node type, a node
+that violates its own schema definition, or a block node in an inline span —
+fails the run, naming the source line and the field at fault. The text stays in
+the output as visible code, so nothing the author wrote is lost, and
+`--no-validate` emits that form rather than failing.
 
 ## Where ADF cannot follow
 
