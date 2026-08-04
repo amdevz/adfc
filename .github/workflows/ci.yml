@@ -54,6 +54,31 @@ jobs:
       - name: Node tests
         run: nix develop --command just test-node
 
+  # `rust-version` in Cargo.toml is a promise to anyone on an older toolchain,
+  # and nothing else here tests it: every other job runs the version pinned in
+  # flake.lock, which is far newer. Without this the claim is only an assertion,
+  # and a consumer on the stated minimum finds out for us.
+  #
+  # This is the one place a non-nix toolchain is correct. The objection to
+  # dtolnay/rust-toolchain@stable is that it floats; an exact version does not,
+  # so this job changes only when the promise does.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Kept in step with the rust-version field in Cargo.toml.
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      # check rather than test: the promise covers building the library and the
+      # binary, not running a suite, and --locked holds it to the dependency
+      # versions the crate actually ships with.
+      - name: Check with the CLI, as the binary ships
+        run: cargo check --locked --all-features
+      # The install the README recommends for library use, which resolves a
+      # different dependency set and so is a separate promise.
+      - name: Check without default features, as a library consumer depends on it
+        run: cargo check --locked --no-default-features
+
   # Separate job so an advisory against a dependency is distinguishable at a
   # glance from a code failure, and so it still runs when the test job fails.
   audit:
