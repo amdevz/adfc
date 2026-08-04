@@ -29,18 +29,37 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      # OIDC publishing needs npm >= 11.5.1 on Node >= 22.14.0, and neither the
-      # runner default nor the devShell's node is new enough. The npm upgrade is
-      # separate because setup-node installs whichever npm that Node bundles.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22.20.0"
-          registry-url: https://registry.npmjs.org
-      - name: Install an npm that can publish over OIDC
+      # Trusted publishing needs npm >= 11.5.1 on Node >= 22.14.0. setup-node is
+      # the common way to get there, but it is not a requirement — npm's OIDC
+      # exchange reads the ACTIONS_ID_TOKEN_* variables that `id-token: write`
+      # already provides, and needs no .npmrc or registry-url, which exist for
+      # token auth.
+      #
+      # The devShell carries both, pinned in flake.lock, so the version that
+      # publishes is the same one a contributor runs `just test-node` against.
+      # Adding it to PATH keeps that true without a second toolchain source.
+      - name: Put the devShell's node on PATH
+        run: nix develop --command bash -c 'dirname "$(command -v npm)"' >> "$GITHUB_PATH"
+
+      # A nixpkgs bump could silently drop below the floor, and the symptom
+      # would be an authentication error that says nothing about versions.
+      - name: Assert the toolchain can publish over OIDC
         run: |
           set -euo pipefail
-          npm install -g npm@latest
           echo "node $(node --version), npm $(npm --version)"
+          node -e '
+            const need = [22, 14, 0];
+            const have = process.versions.node.split(".").map(Number);
+            for (let i = 0; i < 3; i++) {
+              if (have[i] > need[i]) break;
+              if (have[i] < need[i]) {
+                console.error(`::error::node ${process.versions.node} is below the 22.14.0 OIDC floor`);
+                process.exit(1);
+              }
+            }'
+          npm --version | awk -F. '
+            ($1 > 11) || ($1 == 11 && ($2 > 5 || ($2 == 5 && $3 >= 1))) { exit 0 }
+            { print "::error::npm " $0 " is below the 11.5.1 OIDC floor"; exit 1 }'
 
       - name: Fetch the release archives
         env:
