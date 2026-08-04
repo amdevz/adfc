@@ -53,3 +53,11 @@ required-features = ["cli"]
 [profile.release]
 lto = true
 strip = true
+
+# dist builds release archives with `--profile dist`, which cargo rejects unless
+# the profile exists. Inheriting release rather than restating it keeps the
+# published binary identical to what `just build` produces; dist's own template
+# sets `lto = "thin"`, which would quietly ship a less optimised binary than the
+# release profile above promises.
+[profile.dist]
+inherits = "release"
