@@ -8,6 +8,17 @@ While the version is below 1.0, breaking changes may land in a minor release.
 
 ## [Unreleased]
 
+## [0.0.1-rc.2] - 2026-08-04
+
+No changes to conversion or the CLI.
+
+### Security
+
+- Releases publish over trusted publishing (OIDC) instead of long-lived registry
+  tokens, so no publishing credential exists in the repository. The crates.io
+  token is minted per run and revoked when the job ends, and npm authorises each
+  publish against the workflow's own identity.
+
 ## [0.0.1-rc.1] - 2026-08-04
 
 ### Added
@@ -50,5 +61,6 @@ While the version is below 1.0, breaking changes may land in a minor release.
 - Prebuilt binaries for Linux, macOS and Windows on x64 and arm64, distributed
   through npm as an entry package plus per-platform packages.
 
-[Unreleased]: https://github.com/amdevz/adfc/compare/v0.0.1-rc.1...HEAD
+[Unreleased]: https://github.com/amdevz/adfc/compare/v0.0.1-rc.2...HEAD
+[0.0.1-rc.2]: https://github.com/amdevz/adfc/compare/v0.0.1-rc.1...v0.0.1-rc.2
 [0.0.1-rc.1]: https://github.com/amdevz/adfc/releases/tag/v0.0.1-rc.1
