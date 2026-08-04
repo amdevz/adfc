@@ -13,6 +13,11 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Trusted publishing: each `npm publish` proves this job's identity over OIDC
+    # instead of presenting a stored token.
+    permissions:
+      id-token: write
+      contents: read
     env:
       TAG: ${{ fromJson(inputs.plan).announcement_tag }}
     steps:
@@ -23,6 +28,19 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+
+      # OIDC publishing needs npm >= 11.5.1 on Node >= 22.14.0, and neither the
+      # runner default nor the devShell's node is new enough. The npm upgrade is
+      # separate because setup-node installs whichever npm that Node bundles.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.20.0"
+          registry-url: https://registry.npmjs.org
+      - name: Install an npm that can publish over OIDC
+        run: |
+          set -euo pipefail
+          npm install -g npm@latest
+          echo "node $(node --version), npm $(npm --version)"
 
       - name: Fetch the release archives
         env:
@@ -69,24 +87,14 @@ jobs:
           echo "all ${#dirs[@]} manifests at $expected"
 
       - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
-
-          # Fail here, once, rather than as seven confusing 403s. A user scope
-          # can only be published by the matching account, and the token is what
-          # decides that — so the identity is logged even when it looks right,
-          # because a scope mismatch is otherwise diagnosed from permission
-          # errors on packages that do not exist yet.
-          if ! who=$(npm whoami 2>&1); then
-            echo "::error::npm rejected the token: $who"
-            exit 1
-          fi
-          echo "authenticated to npm as: $who"
-          echo "publishing under scope: @amdevz"
+          # No token and no ~/.npmrc: each publish presents this job's OIDC
+          # identity, which npm matches against the trusted publisher configured
+          # on the package. The old `npm whoami` preflight is gone with it —
+          # there is no account to mistake, and the failure it guarded against
+          # (a token belonging to the wrong user) cannot occur.
+          echo "publishing @amdevz over OIDC as node $(node --version), npm $(npm --version)"
 
           publish() {
             local dir="$1"
