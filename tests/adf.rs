@@ -1365,3 +1365,28 @@ fn an_image_in_a_heading_becomes_a_sibling_of_the_heading() {
         .collect();
     assert_eq!(types, vec!["heading", "mediaSingle"]);
 }
+
+#[test]
+fn a_refusal_names_the_container_the_author_wrote() {
+    // A checkbox list item is built as a listItem frame and only retagged to
+    // taskItem when it closes, so an embed inside one used to be refused
+    // against the pre-promotion name. The refusal is right either way, but it
+    // named a container the author never wrote and the document never holds.
+    let e = embed_error("- [ ] t\n\n  ```adf\n  {\"type\":\"rule\"}\n  ```\n");
+    assert!(
+        e.contains("inside taskItem"),
+        "should name the task item, got: {e}"
+    );
+    assert!(
+        !e.contains("inside listItem"),
+        "must not name the intermediate frame: {e}"
+    );
+}
+
+#[test]
+fn a_plain_list_item_is_still_named_a_list_item() {
+    // The promotion only applies to a checkbox item; an ordinary one must keep
+    // its own name.
+    let e = embed_error("- t\n\n  ```adf\n  {\"type\":\"rule\"}\n  ```\n");
+    assert!(e.contains("inside listItem"), "got: {e}");
+}

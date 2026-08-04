@@ -975,6 +975,14 @@ impl Builder {
                 .stack
                 .get(self.stack.len().saturating_sub(2))
                 .map_or("doc", |f| f.node_type);
+            // A checkbox item is a listItem frame until it closes, so
+            // reporting that name would name a container the author never wrote
+            // and the document will never hold.
+            let container = if container == "listItem" && self.task_state.is_some() {
+                "taskItem"
+            } else {
+                container
+            };
             reject_forbidden(container, &nodes).map(|()| nodes)
         }) {
             Ok(nodes) => {
