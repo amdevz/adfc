@@ -20,7 +20,6 @@ jobs:
     # this job's OIDC identity, so no long-lived registry token exists anywhere.
     permissions:
       id-token: write
-      contents: read
     steps:
       - uses: actions/checkout@v5
         with:
