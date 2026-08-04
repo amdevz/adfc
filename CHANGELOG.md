@@ -8,28 +8,11 @@ While the version is below 1.0, breaking changes may land in a minor release.
 
 ## [Unreleased]
 
-## [0.0.1-rc.3] - 2026-08-04
+## [0.0.1] - 2026-08-04
 
-No changes to conversion or the CLI.
-
-### Fixed
-
-- Prereleases publish to npm under the `next` dist-tag instead of `latest`, so
-  `npm i @amdevz/adfc` no longer resolves to a release candidate. `latest` now
-  moves only when a non-prerelease is published.
-
-## [0.0.1-rc.2] - 2026-08-04
-
-No changes to conversion or the CLI.
-
-### Security
-
-- Releases publish over trusted publishing (OIDC) instead of long-lived registry
-  tokens, so no publishing credential exists in the repository. The crates.io
-  token is minted per run and revoked when the job ends, and npm authorises each
-  publish against the workflow's own identity.
-
-## [0.0.1-rc.1] - 2026-08-04
+First release. Published first as `0.0.1-rc.1` through `-rc.3` to prove the
+release pipeline; the converter and CLI are unchanged across all four, so this
+ships the code those candidates were verified against.
 
 ### Added
 
@@ -71,7 +54,12 @@ No changes to conversion or the CLI.
 - Prebuilt binaries for Linux, macOS and Windows on x64 and arm64, distributed
   through npm as an entry package plus per-platform packages.
 
-[Unreleased]: https://github.com/amdevz/adfc/compare/v0.0.1-rc.3...HEAD
-[0.0.1-rc.3]: https://github.com/amdevz/adfc/compare/v0.0.1-rc.2...v0.0.1-rc.3
-[0.0.1-rc.2]: https://github.com/amdevz/adfc/compare/v0.0.1-rc.1...v0.0.1-rc.2
-[0.0.1-rc.1]: https://github.com/amdevz/adfc/releases/tag/v0.0.1-rc.1
+### Security
+
+- Releases publish over trusted publishing (OIDC) rather than long-lived
+  registry tokens, so no publishing credential exists in the repository. The
+  crates.io token is minted per run and revoked when the job ends, and npm
+  authorises each publish against the workflow's own identity.
+
+[Unreleased]: https://github.com/amdevz/adfc/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/amdevz/adfc/releases/tag/v0.0.1
