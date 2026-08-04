@@ -8,6 +8,8 @@ While the version is below 1.0, breaking changes may land in a minor release.
 
 ## [Unreleased]
 
+## [0.0.1-rc.1] - 2026-08-04
+
 ### Added
 
 - Markdown to ADF conversion covering headings, paragraphs, nested bullet and
@@ -48,4 +50,5 @@ While the version is below 1.0, breaking changes may land in a minor release.
 - Prebuilt binaries for Linux, macOS and Windows on x64 and arm64, distributed
   through npm as an entry package plus per-platform packages.
 
-[Unreleased]: https://github.com/amdevz/adfc/commits/main
+[Unreleased]: https://github.com/amdevz/adfc/compare/v0.0.1-rc.1...HEAD
+[0.0.1-rc.1]: https://github.com/amdevz/adfc/releases/tag/v0.0.1-rc.1
