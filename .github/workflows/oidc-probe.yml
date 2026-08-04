@@ -13,4 +13,5 @@ jobs:
   probe:
     uses: ./.github/workflows/oidc-probe-inner.yml
     permissions:
+      contents: read
       id-token: write
