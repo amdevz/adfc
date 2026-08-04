@@ -19,6 +19,7 @@ jobs:
       id-token: write
     env:
       TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+      PRERELEASE: ${{ fromJson(inputs.plan).announcement_is_prerelease }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -114,9 +115,20 @@ jobs:
           # (a token belonging to the wrong user) cannot occur.
           echo "publishing @amdevz over OIDC as node $(node --version), npm $(npm --version)"
 
+          # An untagged publish becomes `latest`, so a prerelease would be what
+          # `npm i @amdevz/adfc` installs. rc.1 went out that way, because the
+          # npm the runner happened to ship did not object; npm 11 refuses
+          # outright. Prereleases go to `next` and leave `latest` for a real one.
+          if [ "$PRERELEASE" = "true" ]; then
+            npm_tag=next
+          else
+            npm_tag=latest
+          fi
+          echo "dist-tag: $npm_tag"
+
           publish() {
             local dir="$1"
-            if out=$(cd "$dir" && npm publish --access public 2>&1); then
+            if out=$(cd "$dir" && npm publish --access public --tag "$npm_tag" 2>&1); then
               echo "$out"; echo "published $dir"
             else
               echo "$out"

@@ -1,6 +1,6 @@
 [package]
 name = "adfc"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 edition = "2024"
 # let-chains (src/lib.rs) need 1.88; edition 2024 alone would allow 1.85.
 rust-version = "1.88"
