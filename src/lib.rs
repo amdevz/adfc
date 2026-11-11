@@ -10,6 +10,9 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+mod html;
+pub use html::{HtmlError, adf_to_html};
+
 /// The official Atlassian ADF JSON Schema, compiled into the binary.
 ///
 /// Embedded rather than read from disk so an `npx adfc` or `cargo install adfc`

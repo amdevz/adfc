@@ -632,3 +632,68 @@ fn cli_converts_an_array_embed() {
     let doc: serde_json::Value = serde_json::from_str(&r.stdout).expect("stdout is JSON");
     assert_eq!(doc["content"].as_array().unwrap().len(), 2);
 }
+
+// --- --format html -----------------------------------------------------------
+
+#[test]
+fn format_html_writes_the_dialect() {
+    let r = run(&["--format", "html"], "> [!NOTE]\n> **hi**\n");
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert_eq!(
+        r.stdout,
+        "<div data-type=\"panel-note\"><p><strong>hi</strong></p></div>\n"
+    );
+}
+
+#[test]
+fn format_defaults_to_adf() {
+    let explicit = run(&["--format", "adf"], "# Title\n");
+    let default = run(&[], "# Title\n");
+    assert_eq!(explicit.code, 0, "stderr: {}", explicit.stderr);
+    assert_eq!(explicit.stdout, default.stdout);
+}
+
+#[test]
+fn format_html_still_validates_first() {
+    // Rendering must not become a way around the schema gate.
+    let r = run(
+        &[
+            "--format",
+            "html",
+            "--schema",
+            &fixture("reject-all-schema.json"),
+        ],
+        "# Title\n",
+    );
+    assert_eq!(r.code, 1);
+    assert_eq!(r.stdout, "", "stdout must be empty on validation failure");
+}
+
+#[test]
+fn format_html_refusal_exits_1_and_writes_nothing() {
+    let out = scratch("refused.html");
+    let r = run(
+        &["--format", "html", "-o", out.to_str().unwrap()],
+        "![d](attachment:d.png)\n",
+    );
+    assert_eq!(r.code, 1, "stdout: {}", r.stdout);
+    assert!(
+        r.stderr.contains("attachment:d.png"),
+        "stderr: {}",
+        r.stderr
+    );
+    assert!(!out.exists(), "nothing may be written on a render failure");
+}
+
+#[test]
+fn format_html_with_no_validate_renders() {
+    let r = run(&["--format", "html", "--no-validate"], "plain\n");
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert_eq!(r.stdout, "<p>plain</p>\n");
+}
+
+#[test]
+fn unknown_format_is_a_usage_error() {
+    let r = run(&["--format", "xml"], "x\n");
+    assert_eq!(r.code, 2);
+}

@@ -1,10 +1,12 @@
-//! adfc - convert Markdown to Atlassian Document Format JSON.
+//! adfc - convert Markdown to Atlassian Document Format JSON, or to the HTML
+//! dialect Atlassian's Rovo MCP server accepts.
 //!
-//! Output is validated against the embedded ADF JSON Schema before being
-//! written; violations go to stderr and exit non-zero, and nothing is written.
+//! The ADF is validated against the embedded ADF JSON Schema before anything
+//! is written, in either format; violations go to stderr and exit non-zero,
+//! and nothing is written.
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -16,9 +18,13 @@ struct Cli {
     #[arg(value_name = "FILE")]
     file: Option<PathBuf>,
 
-    /// Write ADF JSON here; writes stdout when omitted
+    /// Write the output here; writes stdout when omitted
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
+
+    /// Output format
+    #[arg(long, value_enum, default_value_t = Format::Adf)]
+    format: Format,
 
     /// Skip ADF schema validation
     //
@@ -30,6 +36,14 @@ struct Cli {
     /// Validate against this schema instead of the embedded one
     #[arg(long, value_name = "FILE")]
     schema: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Format {
+    /// ADF JSON
+    Adf,
+    /// HTML for Rovo MCP `contentFormat: "html"`
+    Html,
 }
 
 fn main() -> ExitCode {
@@ -78,7 +92,14 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         }
     }
 
-    write_output(cli.output.as_deref(), converted.doc())
+    // Rendered in full before anything is written, so a refusal leaves no
+    // partial output behind, the same guarantee validation gives.
+    let rendered = match cli.format {
+        Format::Adf => converted.doc().to_string(),
+        Format::Html => adfc::adf_to_html(converted.doc())
+            .map_err(|e| anyhow::anyhow!("the document has no HTML form:\n{e}"))?,
+    };
+    write_output(cli.output.as_deref(), &rendered)
 }
 
 fn read_input(file: Option<&Path>) -> Result<String> {
@@ -94,12 +115,11 @@ fn read_input(file: Option<&Path>) -> Result<String> {
     Ok(buf)
 }
 
-/// Write the document, or report why it could not be written.
+/// Write the rendered document, or report why it could not be written.
 ///
-/// The document is rendered to a string first and written in one call, so a
-/// failure cannot leave a truncated file behind.
-fn write_output(output: Option<&Path>, doc: &serde_json::Value) -> Result<ExitCode> {
-    let rendered = format!("{doc}\n");
+/// Written in one call, so a failure cannot leave a truncated file behind.
+fn write_output(output: Option<&Path>, document: &str) -> Result<ExitCode> {
+    let rendered = format!("{document}\n");
 
     match output {
         Some(path) => {
