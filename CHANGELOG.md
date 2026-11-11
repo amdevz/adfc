@@ -8,6 +8,8 @@ While the version is below 1.0, breaking changes may land in a minor release.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-11
+
 ### Added
 
 - `--format html` and `adf_to_html`, which render validated ADF as the HTML
@@ -84,5 +86,6 @@ ships the code those candidates were verified against.
   crates.io token is minted per run and revoked when the job ends, and npm
   authorises each publish against the workflow's own identity.
 
-[Unreleased]: https://github.com/amdevz/adfc/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/amdevz/adfc/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/amdevz/adfc/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/amdevz/adfc/releases/tag/v0.0.1
