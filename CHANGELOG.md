@@ -8,6 +8,14 @@ While the version is below 1.0, breaking changes may land in a minor release.
 
 ## [Unreleased]
 
+### Security
+
+- Update `pulldown-cmark` from 0.13.4 to 0.13.6, which fixes
+  [RUSTSEC-2026-0414](https://rustsec.org/advisories/RUSTSEC-2026-0414) and
+  [RUSTSEC-2026-0433](https://rustsec.org/advisories/RUSTSEC-2026-0433). Both
+  need the parser's wikilinks extension, which adfc does not enable, so adfc
+  was not affected. The update clears the audit for the published binaries.
+
 ## [0.0.1] - 2026-08-04
 
 First release. Published first as `0.0.1-rc.1` through `-rc.3` to prove the
