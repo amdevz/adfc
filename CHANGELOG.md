@@ -10,12 +10,18 @@ While the version is below 1.0, breaking changes may land in a minor release.
 
 ### Added
 
-- `--format html` and the library function `adf_to_html`: render validated ADF
-  in the HTML dialect Atlassian's Rovo MCP server accepts as
-  `contentFormat: "html"`, which no longer takes ADF as input. Covers every
-  node and mark the Markdown converter produces. Nodes and marks without a
-  documented HTML form, raw ADF embeds of them, and `attachment:` images are
-  refused by type and path rather than approximated, and nothing is written.
+- `--format html` and `adf_to_html`, which render validated ADF as the HTML
+  dialect that Atlassian's Rovo MCP server accepts as
+  `contentFormat: "html"`. The server no longer accepts ADF as input.
+- The renderer covers every node and mark the Markdown converter produces,
+  and the embed-only nodes the server documents: status, emoji, date,
+  mention, smart cards, expands, decisions, uploaded media, colours, inline
+  comments and block marks.
+- Anything without a documented form in both Jira and Confluence is refused
+  by type and path, and nothing is written. This includes nesting the
+  server's guide forbids inside a panel, and `attachment:` images.
+- `docs/html-dialect.md` records the mapping and the guide revision it
+  follows.
 
 ### Security
 

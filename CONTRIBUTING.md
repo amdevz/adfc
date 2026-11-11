@@ -54,8 +54,36 @@ just check
 ```
 
 Containment rules, inline node types and per-node validators are all derived
-from this file, so a revision needs no code change — and the suite fails
-immediately if one disagrees with the converter.
+from this file, so a revision needs no change to the converter, and the suite
+fails immediately if one disagrees with it. The HTML renderer is the
+exception: a revision that adds a node type or mark fails
+`every_schema_node_type_is_mapped_or_refused_on_purpose` (or its mark
+counterpart) until the type is mapped in `src/html.rs` or added to the refusal
+list there and in `docs/html-dialect.md`.
+
+## Refreshing the HTML dialect
+
+`--format html` targets a dialect that only Atlassian's Rovo MCP server
+describes, at runtime, to an authenticated client. CI cannot reach it, so drift
+is caught by hand, before any release that touches `src/html.rs` and whenever
+output starts being refused or altered by the server.
+
+1. **Fingerprint.** From an MCP client signed in to an Atlassian site, call
+   `getContentFormatGuide` with `toolName` set to `createJiraIssue`, then to
+   `createConfluencePage`. Take the SHA-256 of each response's `body` string
+   and compare it with the table in `docs/html-dialect.md`.
+2. **On a change**, diff the new body against the previous one locally. The
+   guide text is not committed, because Atlassian does not publish it. Update
+   the mapping in `src/html.rs` and `docs/html-dialect.md`, then the
+   fingerprints and the fetch date.
+3. **Round-trip.** Render a fixture covering every mapped node with
+   `adfc --format html`, post it as a comment on a scratch issue with
+   `addOrEditJiraIssueComment` (`contentFormat: "html"`,
+   `responseContentFormat: "html"`), and compare the echoed body with what was
+   sent. The server's own fill-ins are listed under "Verified against the
+   server" in `docs/html-dialect.md`; anything else is drift. Delete the
+   comment afterwards (in the Jira UI: the MCP server has no delete operation
+   for comments).
 
 ## Distribution
 

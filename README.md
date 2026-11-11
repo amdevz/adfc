@@ -98,19 +98,29 @@ The ADF is still built and validated first, so `--format html` refuses
 everything `--format adf` refuses, and writes nothing when it does. Rendering
 then maps the validated tree node for node.
 
-**When to use it.** The server's own Markdown converter handles headings,
-marks, nested lists, task lists, tables and fenced code correctly, so plain
-Markdown can go to the server as it is. It loses three things adfc keeps:
-hard breaks (which stay a literal newline), `> [!NOTE]` alerts (which stay a
-quote with the marker as text) and links on code spans (which lose the link).
-Use `--format html` when a body has any of those.
+**When to use it.** As of November 2026, the server's own Markdown converter
+handles headings, marks, nested lists, task lists, tables and fenced code, so
+plain Markdown can go to the server as it is. It loses three things adfc
+keeps: hard breaks (which stay a literal newline), `> [!NOTE]` alerts (which
+stay a quote with the marker as text) and links on code spans (which lose the
+link). Use `--format html` when a body has any of those, or a
+[raw ADF embed](#raw-adf-embeds) such as a `status` or `expand`, which the
+server's Markdown path cannot carry.
 
-**What it refuses.** A node or mark without a documented HTML form fails the
-run, naming the type and its path, rather than being approximated. In this
-release that includes raw ADF embeds of nodes Markdown cannot spell (`status`,
-`expand`, `mention` and the rest) and `attachment:` images: the dialect has no
-placeholder for an image that has not been uploaded, so a file image must be
-uploaded and embedded by its media id.
+**What it covers.** Every node and mark the converter produces, plus the
+embed-reachable ones the server documents: status, emoji, date, mention,
+placeholder, smart cards, expands, decisions, block task items, uploaded media
+with captions, custom panels, underline, sub/superscript, text and background
+colour, inline comments, alignment, indentation and breakout.
+[docs/html-dialect.md](docs/html-dialect.md) has the full mapping.
+
+**What it refuses.** Anything without a documented form in both Jira and
+Confluence fails the run, naming the type and its path, rather than being
+approximated: Confluence macros, layouts and sync blocks; a `tip` panel, which
+the server silently stores as `info`; a table or expand inside a panel, which
+the server's guide forbids though the schema allows it; and `attachment:`
+images, since the dialect has no placeholder for an image that has not been
+uploaded. Upload the file and embed it by media id instead.
 
 **Local ids.** The `t1`, `t2` ids adfc gives task lists are omitted, so the
 server generates its own; a 12-character hex id from a fetched document is
