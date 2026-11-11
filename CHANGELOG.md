@@ -8,6 +8,15 @@ While the version is below 1.0, breaking changes may land in a minor release.
 
 ## [Unreleased]
 
+### Added
+
+- `--format html` and the library function `adf_to_html`: render validated ADF
+  in the HTML dialect Atlassian's Rovo MCP server accepts as
+  `contentFormat: "html"`, which no longer takes ADF as input. Covers every
+  node and mark the Markdown converter produces. Nodes and marks without a
+  documented HTML form, raw ADF embeds of them, and `attachment:` images are
+  refused by type and path rather than approximated, and nothing is written.
+
 ### Security
 
 - Update `pulldown-cmark` from 0.13.4 to 0.13.6, which fixes

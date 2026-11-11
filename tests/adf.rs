@@ -17,7 +17,21 @@ fn assert_valid_adf(converted: &adfc::Conversion) {
 fn convert(md: &str) -> Value {
     let converted = markdown_to_adf(md);
     assert_valid_adf(&converted);
+    assert_renders_as_html(md, converted.doc());
     converted.into_doc()
+}
+
+/// Every document this suite converts from ordinary Markdown must also have an
+/// HTML form, so a construct the converter learns to emit cannot outrun the
+/// renderer unnoticed. Embeds and `attachment:` images are excluded: the
+/// renderer refuses them by design (tests/html.rs).
+fn assert_renders_as_html(md: &str, doc: &Value) {
+    if md.contains("attachment:") || md.contains("```adf") || md.contains("`adf:") {
+        return;
+    }
+    if let Err(e) = adfc::adf_to_html(doc) {
+        panic!("valid ADF from ordinary Markdown has no HTML form:\n{e}\nmarkdown: {md:?}");
+    }
 }
 
 #[test]

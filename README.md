@@ -45,6 +45,7 @@ cat ticket.md | adfc | jq .           # stdin too
 | Flag | Effect |
 | --- | --- |
 | `-o, --output <FILE>` | Write here instead of stdout |
+| `--format adf\|html` | ADF JSON (default), or [HTML for Rovo MCP](#html-output-for-the-rovo-mcp-server) |
 | `--no-validate` | Skip schema validation |
 | `--schema <FILE>` | Validate against a different ADF schema revision |
 | `-h, --help` / `-V, --version` | |
@@ -79,6 +80,41 @@ anything the conversion could not honour travels with the document and
 `validate` can refuse it. `validate` checks a conversion against the embedded
 schema, `validate_against` checks it against one you supply, and
 `validate_document` checks an ADF document that came from somewhere else.
+`adf_to_html` renders any ADF document in the dialect described below.
+
+## HTML output for the Rovo MCP server
+
+Atlassian's Rovo MCP server does not take ADF as input. Its Jira and
+Confluence write tools take `contentFormat: "markdown"` or `"html"` and convert
+to ADF on the server. The HTML is a dialect in which each element stands for
+one ADF node (`<div data-type="panel-note">` is a `panel`), described only by
+the server's own `getContentFormatGuide` operation.
+
+```sh
+adfc ticket.md --format html     # validate as ADF, then render the dialect
+```
+
+The ADF is still built and validated first, so `--format html` refuses
+everything `--format adf` refuses, and writes nothing when it does. Rendering
+then maps the validated tree node for node.
+
+**When to use it.** The server's own Markdown converter handles headings,
+marks, nested lists, task lists, tables and fenced code correctly, so plain
+Markdown can go to the server as it is. It loses three things adfc keeps:
+hard breaks (which stay a literal newline), `> [!NOTE]` alerts (which stay a
+quote with the marker as text) and links on code spans (which lose the link).
+Use `--format html` when a body has any of those.
+
+**What it refuses.** A node or mark without a documented HTML form fails the
+run, naming the type and its path, rather than being approximated. In this
+release that includes raw ADF embeds of nodes Markdown cannot spell (`status`,
+`expand`, `mention` and the rest) and `attachment:` images: the dialect has no
+placeholder for an image that has not been uploaded, so a file image must be
+uploaded and embedded by its media id.
+
+**Local ids.** The `t1`, `t2` ids adfc gives task lists are omitted, so the
+server generates its own; a 12-character hex id from a fetched document is
+kept.
 
 ## Supported Markdown
 
@@ -142,6 +178,8 @@ the output as visible code, so nothing the author wrote is lost, and
 - **Inline code** loses any surrounding emphasis; ADF forbids combining them.
 - **Raw HTML** is kept as plain text.
 - **Soft line breaks** become spaces, matching how Atlassian renders flowed text.
+- **Code in a link**, in `--format html`, keeps the link and loses its code
+  styling: the HTML dialect cannot carry both on one run, though ADF can.
 
 ## Contributing
 
