@@ -372,7 +372,13 @@ fn mixed_list_splits_into_runs_of_one_kind() {
         "doc: {doc}"
     );
     assert_eq!(texts(&doc), ["ta", "tb", "pc", "pd", "te"]);
-    assert_eq!(doc["content"][0]["content"][1]["attrs"]["state"], "DONE");
+    assert_eq!(item_of(&doc, "ta"), task("TODO"));
+    assert_eq!(item_of(&doc, "tb"), task("DONE"));
+    assert_eq!(item_of(&doc, "te"), task("TODO"));
+    // Each task run is its own taskList, so each needs its own localId.
+    let (first, last) = (&doc["content"][0], &doc["content"][2]);
+    assert!(first["attrs"]["localId"].is_string());
+    assert_ne!(first["attrs"]["localId"], last["attrs"]["localId"]);
 }
 
 #[test]
@@ -390,6 +396,29 @@ fn mixed_ordered_list_keeps_the_source_numbering() {
     let doc = convert("3. [ ] a\n4. [ ] b\n5. c\n");
     assert_eq!(doc["content"][1]["type"], "orderedList");
     assert_eq!(doc["content"][1]["attrs"]["order"], 5);
+
+    // A task run between plain runs: numbering resumes after it.
+    let doc = convert("5. x\n6. [ ] y\n7. z\n");
+    let runs = list_runs(&doc["content"]);
+    let kinds: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(kinds, ["orderedList", "taskList", "orderedList"]);
+    assert_eq!(doc["content"][0]["attrs"]["order"], 5);
+    assert_eq!(doc["content"][2]["attrs"]["order"], 7);
+    assert_eq!(texts(&doc), ["x", "y", "z"]);
+}
+
+#[test]
+fn a_mixed_ordered_list_inside_a_blockquote_keeps_its_numbering() {
+    // Pins current behaviour: the task run degrades to bullets (a blockquote
+    // forbids taskList) and the plain run stays ordered, still numbered 2.
+    let doc = convert("> 1. [ ] a\n> 2. b\n");
+    let quote = &doc["content"][0];
+    assert_eq!(quote["type"], "blockquote");
+    let runs = list_runs(&quote["content"]);
+    let kinds: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(kinds, ["bulletList", "orderedList"]);
+    assert_eq!(quote["content"][1]["attrs"]["order"], 2);
+    assert_eq!(texts(quote), ["a", "b"]);
 }
 
 #[test]
@@ -416,6 +445,8 @@ fn a_nested_mixed_list_stays_valid_and_keeps_every_item() {
     let types: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(types, ["paragraph", "taskList", "bulletList"]);
     assert_eq!(texts(&doc), ["parent", "na", "nb", "sibling"]);
+    assert_eq!(item_of(&doc, "na"), task("TODO"));
+    assert_eq!(item_of(&doc, "nb"), plain());
 }
 
 /// The innermost list item (taskItem or listItem) holding the text `marker`,
