@@ -122,6 +122,15 @@ fn eval_fixture_renders_both_items_of_a_mixed_task_list() {
 }
 
 #[test]
+fn eval_fixture_keeps_code_styling_inside_a_link() {
+    // End to end over the eval's whole fixture: the linked code span keeps
+    // both marks, the link outermost.
+    let out = html(include_str!("fixtures/eval-rich.md"));
+    let linked = "<a href=\"https://example.com/fx-code-link\"><code>FX-CODE-LINK</code></a>";
+    assert!(out.contains(linked), "no {linked} in {out}");
+}
+
+#[test]
 fn mixed_ordered_list_continues_its_numbering() {
     assert_eq!(
         html("1. [ ] a\n2. b"),
