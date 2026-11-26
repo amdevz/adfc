@@ -54,13 +54,20 @@ fn link_is_the_outermost_mark() {
 }
 
 #[test]
-fn code_inside_a_link_keeps_the_link() {
-    // The dialect cannot hold both: `<a>` keeps the link and drops code
-    // styling. Emitting the code would lose nothing visible, but nesting
-    // `<code>` in `<a>` is what the server documents as dropped, so the
-    // output says plainly what survives.
+fn code_inside_a_link_keeps_both_marks() {
+    // The ADF carries both `code` and `link`, so the render carries both:
+    // the link outermost, `<code>` innermost around the text.
     assert_eq!(
         html("[`x`](https://x.com)"),
+        "<p><a href=\"https://x.com\"><code>x</code></a></p>"
+    );
+}
+
+#[test]
+fn code_and_link_apart_render_as_before() {
+    assert_eq!(html("`x`"), "<p><code>x</code></p>");
+    assert_eq!(
+        html("[x](https://x.com)"),
         "<p><a href=\"https://x.com\">x</a></p>"
     );
 }

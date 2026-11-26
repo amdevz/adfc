@@ -569,9 +569,10 @@ impl Renderer {
                 other => self.no_mark_form(other, path),
             }
         }
-        // The dialect keeps the link and drops code styling when both apply,
-        // so emitting `<code>` inside `<a>` would promise what it discards.
-        if has_code && link.is_none() {
+        // Innermost, so a linked code span is `<a><code>X</code></a>`. ADF
+        // allows only `link` and `annotation` beside `code`, and neither is a
+        // wrapper here, so nothing else sits between them.
+        if has_code {
             wrappers.push(("<code>".into(), "</code>"));
         }
 
