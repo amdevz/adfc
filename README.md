@@ -120,8 +120,8 @@ spans (which lose the link) and lists mixing task and plain items. Use
 [raw ADF embed](#raw-adf-embeds) such as a `status` or `expand`, which the
 server's Markdown path cannot carry. A linked code span renders as
 `<a href><code>X</code></a>`, both marks the ADF has, but the server's guide
-says it keeps the link and drops the code styling, which is not yet confirmed
-against the live server; see [Where ADF cannot follow](#where-adf-cannot-follow).
+says it keeps the link and drops the code styling, and a live write confirmed
+it (2026-11-26); see [Where ADF cannot follow](#where-adf-cannot-follow).
 
 **What it covers.** Every node and mark the converter produces, plus the
 embed-reachable ones the server documents: status, emoji, date, mention,
@@ -206,8 +206,9 @@ the output as visible code, so nothing the author wrote is lost, and
 - **Soft line breaks** become spaces, matching how Atlassian renders flowed text.
 - **Code in a link** keeps both marks in either output: `--format html` emits
   `<a href><code>X</code></a>`. The Rovo MCP server's format guide says it
-  keeps the link and drops the code styling when both apply. That is not yet
-  confirmed against the live server, so a linked code span is only guaranteed
+  keeps the link and drops the code styling when both apply, and a live write
+  confirmed it (2026-11-26: stored with a link mark only), so a linked code
+  span is only guaranteed
   to keep its code styling on the acli (ADF) path.
 
 ## Contributing

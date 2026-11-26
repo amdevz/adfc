@@ -108,9 +108,10 @@ document rendered once can be written to either product.
   server generates its own.
 - **Code in a link.** A run with both marks renders as
   `<a href><code>X</code></a>`, carrying both marks the ADF has. The guide
-  says the server keeps the link and drops code styling when a run has both;
-  that is not yet confirmed against the live server, so a linked code span is
-  only guaranteed to keep its code styling on the ADF path (acli).
+  says the server keeps the link and drops code styling when a run has both,
+  and a live write confirmed it (2026-11-26: `<a href><code>X</code></a>` was
+  stored as text with a link mark only), so a linked code span keeps its code
+  styling only on the ADF path (acli).
 - **Nesting inside a panel.** The guide excludes tables, expands, blockquotes,
   embed cards and nested panels from a panel, though the schema admits a table.
   Each is refused with its path.
