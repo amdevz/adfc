@@ -282,29 +282,35 @@ fn task_list_becomes_adf_task_list() {
     assert_eq!(list["content"][1]["attrs"]["state"], "DONE");
 }
 
-/// The ancestor chain (outermost first) of every text node containing
-/// `marker`, in document order.
-fn ancestors_of_text<'a>(doc: &'a Value, marker: &str) -> Vec<Vec<&'a Value>> {
+/// The ancestor chain (outermost first) of every text node whose text
+/// satisfies `matches`, in document order.
+fn ancestors_where<'a>(doc: &'a Value, matches: &dyn Fn(&str) -> bool) -> Vec<Vec<&'a Value>> {
     fn walk<'a>(
         node: &'a Value,
-        marker: &str,
+        matches: &dyn Fn(&str) -> bool,
         path: &mut Vec<&'a Value>,
         hits: &mut Vec<Vec<&'a Value>>,
     ) {
-        if node["text"].as_str().is_some_and(|t| t.contains(marker)) {
+        if node["text"].as_str().is_some_and(matches) {
             hits.push(path.clone());
         }
         if let Some(children) = node["content"].as_array() {
             path.push(node);
             for child in children {
-                walk(child, marker, path, hits);
+                walk(child, matches, path, hits);
             }
             path.pop();
         }
     }
     let mut hits = Vec::new();
-    walk(doc, marker, &mut Vec::new(), &mut hits);
+    walk(doc, matches, &mut Vec::new(), &mut hits);
     hits
+}
+
+/// The ancestor chains of every text node containing `marker`, the eval's
+/// matching rule.
+fn ancestors_of_text<'a>(doc: &'a Value, marker: &str) -> Vec<Vec<&'a Value>> {
+    ancestors_where(doc, &|t| t.contains(marker))
 }
 
 #[test]
@@ -449,10 +455,10 @@ fn a_nested_mixed_list_stays_valid_and_keeps_every_item() {
     assert_eq!(item_of(&doc, "nb"), plain());
 }
 
-/// The innermost list item (taskItem or listItem) holding the text `marker`,
-/// as `(type, state)`.
+/// The innermost list item (taskItem or listItem) holding a text node that is
+/// exactly `marker`, as `(type, state)`. Exact, so `a` cannot match `plain`.
 fn item_of(doc: &Value, marker: &str) -> (String, Option<String>) {
-    let chains = ancestors_of_text(doc, marker);
+    let chains = ancestors_where(doc, &|t| t == marker);
     let chain = chains
         .first()
         .unwrap_or_else(|| panic!("{marker} lost: {doc}"));
@@ -515,6 +521,36 @@ fn a_nested_task_list_inside_a_blockquote_nests_as_bullets() {
     assert_eq!(item_of(&doc, "a"), plain());
     assert_eq!(item_of(&doc, "child"), plain());
     assert_eq!(texts(quote), ["a", "child", "b"]);
+    // `child` nests under a's listItem rather than becoming its sibling.
+    let chain = &ancestors_where(&doc, &|t| t == "child")[0];
+    let items: Vec<&&Value> = chain.iter().filter(|n| n["type"] == "listItem").collect();
+    assert_eq!(items.len(), 2, "got {chain:?}");
+    assert_eq!(texts(items[0])[0], "a");
+}
+
+#[test]
+fn ordered_numbering_skips_blocks_lifted_out_of_a_task_item() {
+    // The nested list under the task item is lifted into the enclosing list
+    // as a block, not an item, so `c` is still item 2.
+    let doc = convert("1. [ ] a\n   - b\n2. c\n");
+    let chain = &ancestors_where(&doc, &|t| t == "c")[0];
+    let list = chain
+        .iter()
+        .rev()
+        .find(|n| n["type"] == "orderedList")
+        .unwrap_or_else(|| panic!("c is not in an ordered list: {doc}"));
+    assert_eq!(list["attrs"]["order"], 2, "doc: {doc}");
+    assert_eq!(texts(&doc), ["a", "b", "c"]);
+}
+
+#[test]
+fn a_code_block_under_a_task_item_follows_its_task_list() {
+    // A taskItem holds inline content only, so the code block becomes a
+    // sibling of the task list instead of invalidating it.
+    let doc = convert("- [ ] a\n\n  ```\n  code\n  ```\n");
+    let runs = list_runs(&doc["content"]);
+    let kinds: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(kinds, ["taskList", "codeBlock"], "doc: {doc}");
 }
 
 #[test]
