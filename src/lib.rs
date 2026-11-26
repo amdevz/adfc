@@ -553,6 +553,77 @@ struct Frame {
     /// Container whose children must be block nodes: loose inline content
     /// gets wrapped into a trailing paragraph.
     wraps_inline: bool,
+    /// Checkbox state of a list item written as a task. Held per frame, not
+    /// on the builder: a nested item closes before its parent, and a single
+    /// slot handed the parent's checkbox to whichever nested item closed
+    /// first.
+    task_state: Option<&'static str>,
+}
+
+/// What a run of a split list becomes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunKind {
+    /// taskItems, plus the task lists nested under them: a taskList.
+    Task,
+    /// listItems: a list of the source kind.
+    Plain,
+    /// Blocks lifted out of a task item, emitted as themselves.
+    Block,
+}
+
+/// Split a list's children into runs of one kind, in source order.
+///
+/// Each run carries the index, among the list's items, of its first item, so
+/// an ordered plain run can continue the source numbering. A nested taskList
+/// joins the task run it follows (ADF nests task lists that way); anywhere
+/// else it is a block of its own.
+fn split_list_runs(children: Vec<Value>) -> Vec<(RunKind, usize, Vec<Value>)> {
+    let mut runs: Vec<(RunKind, usize, Vec<Value>)> = Vec::new();
+    let mut item_index = 0;
+    for child in children {
+        let following_task = runs.last().is_some_and(|(k, _, _)| *k == RunKind::Task);
+        let kind = match child["type"].as_str() {
+            Some("taskItem") => RunKind::Task,
+            Some("listItem") => RunKind::Plain,
+            Some("taskList") if following_task => RunKind::Task,
+            _ => RunKind::Block,
+        };
+        let is_item = matches!(child["type"].as_str(), Some("taskItem" | "listItem"));
+        match runs.last_mut() {
+            Some((k, _, items)) if *k == kind => items.push(child),
+            _ => runs.push((kind, item_index, vec![child])),
+        }
+        if is_item {
+            item_index += 1;
+        }
+    }
+    runs
+}
+
+/// Recast a taskList as a bulletList, for containers that forbid task lists.
+///
+/// A taskList nested in one (ADF's form for a sub-list of tasks) becomes a
+/// bulletList inside the preceding item, which a listItem may hold.
+fn task_list_as_bullets(task_list: &Value) -> Value {
+    let mut items: Vec<Value> = Vec::new();
+    for item in task_list["content"].as_array().into_iter().flatten() {
+        if item["type"] == "taskList" {
+            let nested = task_list_as_bullets(item);
+            match items
+                .last_mut()
+                .and_then(|prev| prev["content"].as_array_mut())
+            {
+                Some(content) => content.push(nested),
+                None => items.push(json!({"type": "listItem", "content": [nested]})),
+            }
+        } else {
+            items.push(json!({
+                "type": "listItem",
+                "content": [{"type": "paragraph", "content": item["content"].clone()}],
+            }));
+        }
+    }
+    json!({"type": "bulletList", "content": items})
 }
 
 struct Builder {
@@ -564,8 +635,6 @@ struct Builder {
     /// Alt text accumulates here while inside an image, then degrades to a link.
     image_dest: Option<String>,
     image_alt: String,
-    /// Checkbox state of the list item being built, when it is a task item.
-    task_state: Option<&'static str>,
     /// Counter backing the localId every taskList/taskItem must carry.
     local_id: usize,
     /// Nodes lifted out of a container that cannot hold them, paired with the
@@ -875,12 +944,12 @@ impl Builder {
                 attrs: None,
                 content: Vec::new(),
                 wraps_inline: true,
+                task_state: None,
             }],
             marks: Vec::new(),
             in_table_head: false,
             image_dest: None,
             image_alt: String::new(),
-            task_state: None,
             local_id: 0,
             hoisted: Vec::new(),
             embeds: Vec::new(),
@@ -974,17 +1043,14 @@ impl Builder {
             // The frame below the fence is the real container. An embed names
             // its node explicitly, so one the container forbids is refused
             // rather than hoisted: relocating it would change what was asked.
-            let container = self
-                .stack
-                .get(self.stack.len().saturating_sub(2))
-                .map_or("doc", |f| f.node_type);
+            let frame = self.stack.get(self.stack.len().saturating_sub(2));
             // A checkbox item is a listItem frame until it closes, so
             // reporting that name would name a container the author never wrote
             // and the document will never hold.
-            let container = if container == "listItem" && self.task_state.is_some() {
-                "taskItem"
-            } else {
-                container
+            let container = match frame {
+                Some(f) if f.node_type == "listItem" && f.task_state.is_some() => "taskItem",
+                Some(f) => f.node_type,
+                None => "doc",
             };
             reject_forbidden(container, &nodes).map(|()| nodes)
         }) {
@@ -1031,6 +1097,7 @@ impl Builder {
             attrs,
             content: Vec::new(),
             wraps_inline,
+            task_state: None,
         });
     }
 
@@ -1047,74 +1114,78 @@ impl Builder {
         // A list item carrying a checkbox becomes a taskItem, whose content is
         // INLINE (no paragraph wrapper) per the ADF schema.
         if frame.node_type == "listItem"
-            && let Some(state) = self.task_state.take()
+            && let Some(state) = frame.task_state
         {
-            let inline = frame
-                .content
-                .drain(..)
-                .flat_map(|node| match node {
-                    Value::Object(mut obj) if obj["type"] == "paragraph" => obj
-                        .remove("content")
-                        .and_then(|c| match c {
-                            Value::Array(items) => Some(items),
-                            _ => None,
-                        })
-                        .unwrap_or_default(),
-                    other => vec![other],
-                })
-                .collect::<Vec<_>>();
+            let mut inline = Vec::new();
+            let mut blocks = Vec::new();
+            for node in frame.content.drain(..) {
+                match node {
+                    Value::Object(mut obj) if obj["type"] == "paragraph" => {
+                        if let Some(Value::Array(items)) = obj.remove("content") {
+                            inline.extend(items);
+                        }
+                    }
+                    other => blocks.push(other),
+                }
+            }
             let local_id = self.next_local_id();
             self.append_block_or_inline(json!({
                 "type": "taskItem",
                 "attrs": {"localId": local_id, "state": state},
                 "content": inline,
             }));
+            // A taskItem holds inline content only, so a nested list (or any
+            // other block) follows it in the enclosing list, which places it
+            // when that list closes. Appending it here keeps source order.
+            if let Some(list) = self.stack.last_mut() {
+                list.content.extend(blocks);
+            }
             return;
         }
 
-        // A list holding taskItems is a taskList, not a bullet/ordered list.
-        // A taskList may hold only taskItems and a bullet/ordered list only
-        // listItems, so a list mixing the two is split into runs of one kind,
-        // in source order, rather than dropping either.
+        // A taskList may hold only taskItems (and nested taskLists) and a
+        // bullet/ordered list only listItems, so a list holding any taskItem
+        // is split into runs of one kind, in source order, rather than
+        // dropping either kind.
         if matches!(frame.node_type, "bulletList" | "orderedList")
             && frame
                 .content
                 .iter()
                 .any(|child| child["type"] == "taskItem")
         {
-            // (is_task, index of the run's first item in the source list, items)
-            let mut runs: Vec<(bool, usize, Vec<Value>)> = Vec::new();
-            for (index, child) in std::mem::take(&mut frame.content).into_iter().enumerate() {
-                let is_task = child["type"] == "taskItem";
-                match runs.last_mut() {
-                    Some((kind, _, items)) if *kind == is_task => items.push(child),
-                    _ => runs.push((is_task, index, vec![child])),
-                }
-            }
-            for (is_task, first, items) in runs {
-                let node = if is_task {
-                    let local_id = self.next_local_id();
-                    json!({
-                        "type": "taskList",
-                        "attrs": {"localId": local_id},
-                        "content": items,
-                    })
-                } else {
-                    let mut node = Map::new();
-                    node.insert("type".into(), json!(frame.node_type));
-                    if let Some(mut attrs) = frame.attrs.clone() {
-                        // A plain run after a task run continues the source
-                        // numbering rather than restarting at the list's start.
-                        if frame.node_type == "orderedList" {
-                            let start = attrs["order"].as_u64().unwrap_or(1);
-                            attrs["order"] = json!(start + first as u64);
-                        }
-                        node.insert("attrs".into(), attrs);
+            for (kind, first, items) in split_list_runs(std::mem::take(&mut frame.content)) {
+                match kind {
+                    RunKind::Task => {
+                        let local_id = self.next_local_id();
+                        self.append_block(json!({
+                            "type": "taskList",
+                            "attrs": {"localId": local_id},
+                            "content": items,
+                        }));
                     }
-                    node.insert("content".into(), Value::Array(items));
-                    Value::Object(node)
-                };
-                self.append_block(node);
+                    RunKind::Plain => {
+                        let mut node = Map::new();
+                        node.insert("type".into(), json!(frame.node_type));
+                        if let Some(mut attrs) = frame.attrs.clone() {
+                            // A plain run after a task run continues the source
+                            // numbering rather than restarting at the start.
+                            if frame.node_type == "orderedList" {
+                                let start = attrs["order"].as_u64().unwrap_or(1);
+                                attrs["order"] = json!(start.saturating_add(first as u64));
+                            }
+                            node.insert("attrs".into(), attrs);
+                        }
+                        node.insert("content".into(), Value::Array(items));
+                        self.append_block(Value::Object(node));
+                    }
+                    // Lifted out of a task item; no list kind can hold it, so
+                    // it becomes a sibling of the runs around it.
+                    RunKind::Block => {
+                        for node in items {
+                            self.append_block(node);
+                        }
+                    }
+                }
             }
             return;
         }
@@ -1256,26 +1327,7 @@ impl Builder {
                 }
             }
             // A blockquote may hold a bullet list but not a task list.
-            "taskList" => {
-                let items: Vec<Value> = node["content"]
-                    .as_array()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .map(|item| {
-                                json!({
-                                    "type": "listItem",
-                                    "content": [{
-                                        "type": "paragraph",
-                                        "content": item["content"].clone(),
-                                    }],
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                self.append_block_or_inline(json!({"type": "bulletList", "content": items}));
-            }
+            "taskList" => self.append_block_or_inline(task_list_as_bullets(&node)),
             // Everything else, tables included, is lifted to the nearest
             // ancestor that accepts it rather than having its content dropped.
             _ => self.append_hoisted_block(node),
@@ -1389,7 +1441,16 @@ impl Builder {
             // expression text degrades to plain text like any other run.
             Event::Text(t) | Event::InlineMath(t) | Event::DisplayMath(t) => self.text(&t),
             Event::TaskListMarker(checked) => {
-                self.task_state = Some(if checked { "DONE" } else { "TODO" });
+                // The marker can arrive inside the item's paragraph, so the
+                // item is the innermost listItem, not necessarily the top frame.
+                if let Some(item) = self
+                    .stack
+                    .iter_mut()
+                    .rev()
+                    .find(|f| f.node_type == "listItem")
+                {
+                    item.task_state = Some(if checked { "DONE" } else { "TODO" });
+                }
             }
             Event::Code(t) => {
                 // Inline code inside image alt text contributes its literal

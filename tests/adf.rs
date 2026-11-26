@@ -418,6 +418,74 @@ fn a_nested_mixed_list_stays_valid_and_keeps_every_item() {
     assert_eq!(texts(&doc), ["parent", "na", "nb", "sibling"]);
 }
 
+/// The innermost list item (taskItem or listItem) holding the text `marker`,
+/// as `(type, state)`.
+fn item_of(doc: &Value, marker: &str) -> (String, Option<String>) {
+    let chains = ancestors_of_text(doc, marker);
+    let chain = chains
+        .first()
+        .unwrap_or_else(|| panic!("{marker} lost: {doc}"));
+    let item = chain
+        .iter()
+        .rev()
+        .find(|n| n["type"] == "taskItem" || n["type"] == "listItem")
+        .unwrap_or_else(|| panic!("{marker} is not in a list item: {doc}"));
+    (
+        item["type"].as_str().unwrap().to_owned(),
+        item["attrs"]["state"].as_str().map(str::to_owned),
+    )
+}
+
+fn task(state: &str) -> (String, Option<String>) {
+    ("taskItem".to_owned(), Some(state.to_owned()))
+}
+
+fn plain() -> (String, Option<String>) {
+    ("listItem".to_owned(), None)
+}
+
+#[test]
+fn a_task_item_with_a_nested_list_keeps_its_own_checkbox() {
+    // The checkbox belongs to the item it was written on, not to whichever
+    // nested item closes first.
+    let doc = convert("- [ ] a\n  - plain child\n  - [ ] task child\n- b\n");
+    assert_eq!(item_of(&doc, "a"), task("TODO"));
+    assert_eq!(item_of(&doc, "plain child"), plain());
+    assert_eq!(item_of(&doc, "task child"), task("TODO"));
+    assert_eq!(item_of(&doc, "b"), plain());
+    assert_eq!(texts(&doc), ["a", "plain child", "task child", "b"]);
+}
+
+#[test]
+fn a_nested_task_list_nests_inside_its_parent_task_list() {
+    // ADF nests a task list as a sibling of the taskItem it belongs under,
+    // since a taskItem holds inline content only.
+    let doc = convert("- [x] a\n  - [ ] child\n- [ ] b\n");
+    assert_eq!(item_of(&doc, "a"), task("DONE"));
+    assert_eq!(item_of(&doc, "child"), task("TODO"));
+    assert_eq!(item_of(&doc, "b"), task("TODO"));
+    let list = &doc["content"][0];
+    assert_eq!(list["type"], "taskList");
+    let kinds: Vec<&str> = list["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["taskItem", "taskList", "taskItem"]);
+}
+
+#[test]
+fn a_nested_task_list_inside_a_blockquote_nests_as_bullets() {
+    let doc = convert("> - [ ] a\n>   - [ ] child\n> - [ ] b\n");
+    let quote = &doc["content"][0];
+    assert_eq!(quote["type"], "blockquote");
+    assert!(!quote.to_string().contains("task"), "got {quote}");
+    assert_eq!(item_of(&doc, "a"), plain());
+    assert_eq!(item_of(&doc, "child"), plain());
+    assert_eq!(texts(quote), ["a", "child", "b"]);
+}
+
 #[test]
 fn empty_input_yields_empty_doc() {
     let doc = convert("");
