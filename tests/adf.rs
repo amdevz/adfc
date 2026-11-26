@@ -336,9 +336,86 @@ fn eval_fixture_keeps_both_items_of_a_mixed_task_list() {
     );
 }
 
+/// `(type, item count)` of each block in `content`.
+fn list_runs(content: &Value) -> Vec<(String, usize)> {
+    content
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| {
+            let items = n["content"].as_array().map_or(0, Vec::len);
+            (n["type"].as_str().unwrap().to_owned(), items)
+        })
+        .collect()
+}
+
+/// Every text run under `node`, in document order.
+fn texts(node: &Value) -> Vec<&str> {
+    let mut out: Vec<&str> = node["text"].as_str().into_iter().collect();
+    if let Some(children) = node["content"].as_array() {
+        out.extend(children.iter().flat_map(texts));
+    }
+    out
+}
+
 #[test]
-fn mixed_list_with_checkboxes_and_plain_items_stays_valid() {
-    convert("- [ ] a\n- plain\n- [x] b");
+fn mixed_list_splits_into_runs_of_one_kind() {
+    // A taskList holds only taskItems and a bulletList only listItems, so a
+    // mixed list becomes alternating runs; adjacent items of a kind stay
+    // together.
+    let doc = convert("- [ ] ta\n- [x] tb\n- pc\n- pd\n- [ ] te\n");
+    let runs = list_runs(&doc["content"]);
+    let expected = [("taskList", 2), ("bulletList", 2), ("taskList", 1)];
+    assert_eq!(
+        runs,
+        expected.map(|(t, n)| (t.to_owned(), n)).to_vec(),
+        "doc: {doc}"
+    );
+    assert_eq!(texts(&doc), ["ta", "tb", "pc", "pd", "te"]);
+    assert_eq!(doc["content"][0]["content"][1]["attrs"]["state"], "DONE");
+}
+
+#[test]
+fn mixed_ordered_list_keeps_the_source_numbering() {
+    let doc = convert("1. [ ] a\n2. b\n");
+    let runs = list_runs(&doc["content"]);
+    assert_eq!(
+        runs,
+        vec![("taskList".to_owned(), 1), ("orderedList".to_owned(), 1)]
+    );
+    assert_eq!(doc["content"][1]["attrs"]["order"], 2);
+    assert_eq!(texts(&doc["content"][1]), ["b"]);
+
+    // The offset counts from the list's own start, not from 1.
+    let doc = convert("3. [ ] a\n4. [ ] b\n5. c\n");
+    assert_eq!(doc["content"][1]["type"], "orderedList");
+    assert_eq!(doc["content"][1]["attrs"]["order"], 5);
+}
+
+#[test]
+fn a_mixed_list_inside_a_blockquote_keeps_every_item_as_a_bullet() {
+    // taskList is not permitted in a blockquote, so task runs degrade to
+    // bullets; plain runs are bullets already. Nothing is dropped.
+    let doc = convert("> - [ ] qa\n> - qb\n> - [x] qc\n");
+    let quote = &doc["content"][0];
+    assert_eq!(quote["type"], "blockquote");
+    let types: Vec<String> = list_runs(&quote["content"])
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    assert!(types.iter().all(|t| t == "bulletList"), "got {types:?}");
+    assert_eq!(texts(quote), ["qa", "qb", "qc"]);
+}
+
+#[test]
+fn a_nested_mixed_list_stays_valid_and_keeps_every_item() {
+    let doc = convert("- parent\n  - [ ] na\n  - nb\n- sibling\n");
+    let outer = &doc["content"][0];
+    assert_eq!(outer["type"], "bulletList");
+    let runs = list_runs(&outer["content"][0]["content"]);
+    let types: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(types, ["paragraph", "taskList", "bulletList"]);
+    assert_eq!(texts(&doc), ["parent", "na", "nb", "sibling"]);
 }
 
 #[test]
