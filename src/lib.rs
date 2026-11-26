@@ -1073,25 +1073,49 @@ impl Builder {
         }
 
         // A list holding taskItems is a taskList, not a bullet/ordered list.
+        // A taskList may hold only taskItems and a bullet/ordered list only
+        // listItems, so a list mixing the two is split into runs of one kind,
+        // in source order, rather than dropping either.
         if matches!(frame.node_type, "bulletList" | "orderedList")
             && frame
                 .content
                 .iter()
                 .any(|child| child["type"] == "taskItem")
         {
-            let local_id = self.next_local_id();
-            let content = std::mem::take(&mut frame.content);
-            // Any plain listItems alongside tasks would be schema-invalid
-            // inside a taskList; keep only the task items.
-            let tasks: Vec<Value> = content
-                .into_iter()
-                .filter(|child| child["type"] == "taskItem")
-                .collect();
-            self.append_block(json!({
-                "type": "taskList",
-                "attrs": {"localId": local_id},
-                "content": tasks,
-            }));
+            // (is_task, index of the run's first item in the source list, items)
+            let mut runs: Vec<(bool, usize, Vec<Value>)> = Vec::new();
+            for (index, child) in std::mem::take(&mut frame.content).into_iter().enumerate() {
+                let is_task = child["type"] == "taskItem";
+                match runs.last_mut() {
+                    Some((kind, _, items)) if *kind == is_task => items.push(child),
+                    _ => runs.push((is_task, index, vec![child])),
+                }
+            }
+            for (is_task, first, items) in runs {
+                let node = if is_task {
+                    let local_id = self.next_local_id();
+                    json!({
+                        "type": "taskList",
+                        "attrs": {"localId": local_id},
+                        "content": items,
+                    })
+                } else {
+                    let mut node = Map::new();
+                    node.insert("type".into(), json!(frame.node_type));
+                    if let Some(mut attrs) = frame.attrs.clone() {
+                        // A plain run after a task run continues the source
+                        // numbering rather than restarting at the list's start.
+                        if frame.node_type == "orderedList" {
+                            let start = attrs["order"].as_u64().unwrap_or(1);
+                            attrs["order"] = json!(start + first as u64);
+                        }
+                        node.insert("attrs".into(), attrs);
+                    }
+                    node.insert("content".into(), Value::Array(items));
+                    Value::Object(node)
+                };
+                self.append_block(node);
+            }
             return;
         }
 

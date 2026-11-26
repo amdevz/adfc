@@ -282,6 +282,60 @@ fn task_list_becomes_adf_task_list() {
     assert_eq!(list["content"][1]["attrs"]["state"], "DONE");
 }
 
+/// The ancestor chain (outermost first) of every text node containing
+/// `marker`, in document order.
+fn ancestors_of_text<'a>(doc: &'a Value, marker: &str) -> Vec<Vec<&'a Value>> {
+    fn walk<'a>(
+        node: &'a Value,
+        marker: &str,
+        path: &mut Vec<&'a Value>,
+        hits: &mut Vec<Vec<&'a Value>>,
+    ) {
+        if node["text"].as_str().is_some_and(|t| t.contains(marker)) {
+            hits.push(path.clone());
+        }
+        if let Some(children) = node["content"].as_array() {
+            path.push(node);
+            for child in children {
+                walk(child, marker, path, hits);
+            }
+            path.pop();
+        }
+    }
+    let mut hits = Vec::new();
+    walk(doc, marker, &mut Vec::new(), &mut hits);
+    hits
+}
+
+#[test]
+fn eval_fixture_keeps_both_items_of_a_mixed_task_list() {
+    // The eval's task-mixed rule: the task keeps its checkbox, the plain item
+    // survives as a list item, and their order is the source's.
+    let doc = convert(include_str!("fixtures/eval-rich.md"));
+    let text = doc.to_string();
+    let (todo_at, plain_at) = (
+        text.find("FX-TASK-MIXED-TODO").expect("task item present"),
+        text.find("FX-TASK-MIXED-PLAIN")
+            .expect("plain item present"),
+    );
+    assert!(todo_at < plain_at, "source order lost");
+
+    let todo = ancestors_of_text(&doc, "FX-TASK-MIXED-TODO");
+    assert!(
+        todo.iter().any(|chain| chain
+            .iter()
+            .any(|n| n["type"] == "taskItem" && n["attrs"]["state"] == "TODO")),
+        "task item lost its checkbox: {todo:?}"
+    );
+    let plain = ancestors_of_text(&doc, "FX-TASK-MIXED-PLAIN");
+    assert!(
+        plain
+            .iter()
+            .any(|chain| chain.iter().any(|n| n["type"] == "listItem")),
+        "plain item is not a list item: {plain:?}"
+    );
+}
+
 #[test]
 fn mixed_list_with_checkboxes_and_plain_items_stays_valid() {
     convert("- [ ] a\n- plain\n- [x] b");
