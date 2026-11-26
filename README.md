@@ -84,14 +84,13 @@ schema, `validate_against` checks it against one you supply, and
 
 ## Which output for which path
 
-Atlassian has three ways to write a rich body, and each wants a different
-input:
+adfc feeds three write paths, and each wants a different input:
 
 | Write path | What to send |
 | --- | --- |
-| acli: `acli jira workitem create --from-json`, or `edit --description-file` | adfc's default ADF output. acli takes plain text or ADF only, and stores Markdown or wiki markup as the typed text. |
+| acli (Jira only): `acli jira workitem create --from-json`, or `edit --description-file` | adfc's default ADF output. acli takes plain text or ADF only, and stores Markdown or wiki markup as the typed text. |
 | Rovo MCP server, `contentFormat: "html"` | `adfc --format html` |
-| Rovo MCP server, `contentFormat: "markdown"` | The Markdown as it is, with no adfc step. Only for a body with none of what the server's Markdown path loses: alerts, hard breaks, linked code spans, raw ADF embeds and lists mixing task and plain items. |
+| Rovo MCP server, `contentFormat: "markdown"` | The Markdown as it is, with no adfc step. Only for a body with none of what the server's Markdown path loses: alerts, linked code spans, raw ADF embeds and lists mixing task and plain items. |
 
 A linked code span is only guaranteed to keep its code styling on the acli
 path, since the ADF goes in as written.
@@ -114,15 +113,15 @@ then maps the validated tree node for node.
 
 **When to use it.** As of November 2026, the server's own Markdown converter
 handles headings, marks, nested lists, task lists, tables and fenced code, so
-plain Markdown can go to the server as it is. It loses what adfc keeps: hard
-breaks (which stay a literal newline), `> [!NOTE]` alerts (which stay a quote
-with the marker as text), links on code spans (which lose the link) and lists
-mixing task and plain items. Use `--format html` when a body has any of those,
-or a [raw ADF embed](#raw-adf-embeds) such as a `status` or `expand`, which the
+plain Markdown can go to the server as it is. It loses what adfc keeps:
+`> [!NOTE]` alerts (which stay a quote with the marker as text), links on code
+spans (which lose the link) and lists mixing task and plain items. Use
+`--format html` when a body has any of those, or a
+[raw ADF embed](#raw-adf-embeds) such as a `status` or `expand`, which the
 server's Markdown path cannot carry. A linked code span renders as
 `<a href><code>X</code></a>`, both marks the ADF has, but the server's guide
-says it keeps the link and drops the code styling; see
-[Where ADF cannot follow](#where-adf-cannot-follow).
+says it keeps the link and drops the code styling, which is not yet confirmed
+against the live server; see [Where ADF cannot follow](#where-adf-cannot-follow).
 
 **What it covers.** Every node and mark the converter produces, plus the
 embed-reachable ones the server documents: status, emoji, date, mention,
