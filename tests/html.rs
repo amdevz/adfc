@@ -99,6 +99,32 @@ fn task_list_omits_generated_local_ids() {
 }
 
 #[test]
+fn eval_fixture_renders_both_items_of_a_mixed_task_list() {
+    // End to end over the eval's whole fixture: the task keeps an unchecked
+    // checkbox, the plain item is an ordinary list item, in source order.
+    let out = html(include_str!("fixtures/eval-rich.md"));
+    let todo = "<li data-type=\"task-item\"><input type=\"checkbox\"> FX-TASK-MIXED-TODO</li>";
+    let plain = "<ul><li><p>FX-TASK-MIXED-PLAIN</p></li></ul>";
+    let todo_at = out
+        .find(todo)
+        .unwrap_or_else(|| panic!("no {todo} in {out}"));
+    let plain_at = out
+        .find(plain)
+        .unwrap_or_else(|| panic!("no {plain} in {out}"));
+    assert!(todo_at < plain_at, "source order lost: {out}");
+}
+
+#[test]
+fn mixed_ordered_list_continues_its_numbering() {
+    assert_eq!(
+        html("1. [ ] a\n2. b"),
+        "<ul data-type=\"task-list\">\
+         <li data-type=\"task-item\"><input type=\"checkbox\"> a</li></ul>\
+         <ol start=\"2\"><li><p>b</p></li></ol>"
+    );
+}
+
+#[test]
 fn well_formed_local_ids_survive() {
     // A fetched document carries server-issued ids; dropping them would detach
     // anything that targets the node.
