@@ -64,6 +64,14 @@ fn code_inside_a_link_keeps_both_marks() {
 }
 
 #[test]
+fn linked_code_span_escapes_its_text_and_href() {
+    assert_eq!(
+        html("[`<x>`](https://x.com/?a=1&b=2)"),
+        "<p><a href=\"https://x.com/?a=1&amp;b=2\"><code>&lt;x&gt;</code></a></p>"
+    );
+}
+
+#[test]
 fn code_and_link_apart_render_as_before() {
     assert_eq!(html("`x`"), "<p><code>x</code></p>");
     assert_eq!(
