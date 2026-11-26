@@ -17,6 +17,8 @@ While the version is below 1.0, breaking changes may land in a minor release.
   to the first nested item. Its nested task list nests under it; a nested
   plain list, code block or table follows it as a sibling, since a task item
   holds text only.
+- `--format html` keeps a code span's styling inside a link, rendering
+  `<a href><code>X</code></a>` instead of the link alone.
 
 ## [0.1.0] - 2026-11-11
 
