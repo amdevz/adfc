@@ -8,6 +8,11 @@ While the version is below 1.0, breaking changes may land in a minor release.
 
 ## [Unreleased]
 
+### Fixed
+
+- A list mixing task and plain items now keeps every item (task runs become
+  task lists, plain runs stay plain lists) instead of dropping the plain ones.
+
 ## [0.1.0] - 2026-11-11
 
 ### Added
