@@ -82,6 +82,19 @@ schema, `validate_against` checks it against one you supply, and
 `validate_document` checks an ADF document that came from somewhere else.
 `adf_to_html` renders any ADF document in the dialect described below.
 
+## Which output for which path
+
+adfc feeds three write paths, and each wants a different input:
+
+| Write path | What to send |
+| --- | --- |
+| acli (Jira only): `acli jira workitem create --from-json`, or `edit --description-file` | adfc's default ADF output. acli takes plain text or ADF only, and stores Markdown or wiki markup as the typed text. |
+| Rovo MCP server, `contentFormat: "html"` | `adfc --format html` |
+| Rovo MCP server, `contentFormat: "markdown"` | The Markdown as it is, with no adfc step. Only for a body with none of what the server's Markdown path loses: alerts, linked code spans, raw ADF embeds and lists mixing task and plain items. |
+
+A linked code span is only guaranteed to keep its code styling on the acli
+path, since the ADF goes in as written.
+
 ## HTML output for the Rovo MCP server
 
 Atlassian's Rovo MCP server does not take ADF as input. Its Jira and
@@ -100,12 +113,15 @@ then maps the validated tree node for node.
 
 **When to use it.** As of November 2026, the server's own Markdown converter
 handles headings, marks, nested lists, task lists, tables and fenced code, so
-plain Markdown can go to the server as it is. It loses three things adfc
-keeps: hard breaks (which stay a literal newline), `> [!NOTE]` alerts (which
-stay a quote with the marker as text) and links on code spans (which lose the
-link). Use `--format html` when a body has any of those, or a
+plain Markdown can go to the server as it is. It loses what adfc keeps:
+`> [!NOTE]` alerts (which stay a quote with the marker as text), links on code
+spans (which lose the link) and lists mixing task and plain items. Use
+`--format html` when a body has any of those, or a
 [raw ADF embed](#raw-adf-embeds) such as a `status` or `expand`, which the
-server's Markdown path cannot carry.
+server's Markdown path cannot carry. A linked code span renders as
+`<a href><code>X</code></a>`, both marks the ADF has, but the server's guide
+says it keeps the link and drops the code styling, and a live write confirmed
+it (2026-11-26); see [Where ADF cannot follow](#where-adf-cannot-follow).
 
 **What it covers.** Every node and mark the converter produces, plus the
 embed-reachable ones the server documents: status, emoji, date, mention,
@@ -188,8 +204,12 @@ the output as visible code, so nothing the author wrote is lost, and
 - **Inline code** loses any surrounding emphasis; ADF forbids combining them.
 - **Raw HTML** is kept as plain text.
 - **Soft line breaks** become spaces, matching how Atlassian renders flowed text.
-- **Code in a link**, in `--format html`, keeps the link and loses its code
-  styling: the HTML dialect cannot carry both on one run, though ADF can.
+- **Code in a link** keeps both marks in either output: `--format html` emits
+  `<a href><code>X</code></a>`. The Rovo MCP server's format guide says it
+  keeps the link and drops the code styling when both apply, and a live write
+  confirmed it (2026-11-26: stored with a link mark only), so a linked code
+  span is only guaranteed
+  to keep its code styling on the acli (ADF) path.
 
 ## Contributing
 

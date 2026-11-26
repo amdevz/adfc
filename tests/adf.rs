@@ -282,9 +282,304 @@ fn task_list_becomes_adf_task_list() {
     assert_eq!(list["content"][1]["attrs"]["state"], "DONE");
 }
 
+/// The ancestor chain (outermost first) of every text node whose text
+/// satisfies `matches`, in document order.
+fn ancestors_where<'a>(doc: &'a Value, matches: &dyn Fn(&str) -> bool) -> Vec<Vec<&'a Value>> {
+    fn walk<'a>(
+        node: &'a Value,
+        matches: &dyn Fn(&str) -> bool,
+        path: &mut Vec<&'a Value>,
+        hits: &mut Vec<Vec<&'a Value>>,
+    ) {
+        if node["text"].as_str().is_some_and(matches) {
+            hits.push(path.clone());
+        }
+        if let Some(children) = node["content"].as_array() {
+            path.push(node);
+            for child in children {
+                walk(child, matches, path, hits);
+            }
+            path.pop();
+        }
+    }
+    let mut hits = Vec::new();
+    walk(doc, matches, &mut Vec::new(), &mut hits);
+    hits
+}
+
+/// The ancestor chains of every text node containing `marker`, the eval's
+/// matching rule.
+fn ancestors_of_text<'a>(doc: &'a Value, marker: &str) -> Vec<Vec<&'a Value>> {
+    ancestors_where(doc, &|t| t.contains(marker))
+}
+
 #[test]
-fn mixed_list_with_checkboxes_and_plain_items_stays_valid() {
-    convert("- [ ] a\n- plain\n- [x] b");
+fn eval_fixture_keeps_both_items_of_a_mixed_task_list() {
+    // The eval's task-mixed rule: the task keeps its checkbox, the plain item
+    // survives as a list item, and their order is the source's.
+    let doc = convert(include_str!("fixtures/eval-rich.md"));
+    let text = doc.to_string();
+    let (todo_at, plain_at) = (
+        text.find("FX-TASK-MIXED-TODO").expect("task item present"),
+        text.find("FX-TASK-MIXED-PLAIN")
+            .expect("plain item present"),
+    );
+    assert!(todo_at < plain_at, "source order lost");
+
+    let todo = ancestors_of_text(&doc, "FX-TASK-MIXED-TODO");
+    assert!(
+        todo.iter().any(|chain| chain
+            .iter()
+            .any(|n| n["type"] == "taskItem" && n["attrs"]["state"] == "TODO")),
+        "task item lost its checkbox: {todo:?}"
+    );
+    let plain = ancestors_of_text(&doc, "FX-TASK-MIXED-PLAIN");
+    assert!(
+        plain
+            .iter()
+            .any(|chain| chain.iter().any(|n| n["type"] == "listItem")),
+        "plain item is not a list item: {plain:?}"
+    );
+}
+
+#[test]
+fn eval_fixture_keeps_code_and_link_marks_on_one_run() {
+    // The eval's code-link rule: the run holding the marker carries both a
+    // `code` mark and a `link` mark to the fixture's URL.
+    let doc = convert(include_str!("fixtures/eval-rich.md"));
+    let mut runs = Vec::new();
+    find_runs(&doc, "FX-CODE-LINK", &mut runs);
+    assert!(
+        runs.iter().any(|run| {
+            let marks = run["marks"].as_array().map_or(&[][..], Vec::as_slice);
+            marks.iter().any(|m| m["type"] == "code")
+                && marks.iter().any(|m| {
+                    m["type"] == "link" && m["attrs"]["href"] == "https://example.com/fx-code-link"
+                })
+        }),
+        "no run with both code and link marks: {runs:?}"
+    );
+}
+
+/// Every text node under `node` whose text contains `marker`.
+fn find_runs<'a>(node: &'a Value, marker: &str, out: &mut Vec<&'a Value>) {
+    if node["text"].as_str().is_some_and(|t| t.contains(marker)) {
+        out.push(node);
+    }
+    for child in node["content"].as_array().into_iter().flatten() {
+        find_runs(child, marker, out);
+    }
+}
+
+/// `(type, item count)` of each block in `content`.
+fn list_runs(content: &Value) -> Vec<(String, usize)> {
+    content
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| {
+            let items = n["content"].as_array().map_or(0, Vec::len);
+            (n["type"].as_str().unwrap().to_owned(), items)
+        })
+        .collect()
+}
+
+/// Every text run under `node`, in document order.
+fn texts(node: &Value) -> Vec<&str> {
+    let mut out: Vec<&str> = node["text"].as_str().into_iter().collect();
+    if let Some(children) = node["content"].as_array() {
+        out.extend(children.iter().flat_map(texts));
+    }
+    out
+}
+
+#[test]
+fn mixed_list_splits_into_runs_of_one_kind() {
+    // A taskList holds only taskItems and a bulletList only listItems, so a
+    // mixed list becomes alternating runs; adjacent items of a kind stay
+    // together.
+    let doc = convert("- [ ] ta\n- [x] tb\n- pc\n- pd\n- [ ] te\n");
+    let runs = list_runs(&doc["content"]);
+    let expected = [("taskList", 2), ("bulletList", 2), ("taskList", 1)];
+    assert_eq!(
+        runs,
+        expected.map(|(t, n)| (t.to_owned(), n)).to_vec(),
+        "doc: {doc}"
+    );
+    assert_eq!(texts(&doc), ["ta", "tb", "pc", "pd", "te"]);
+    assert_eq!(item_of(&doc, "ta"), task("TODO"));
+    assert_eq!(item_of(&doc, "tb"), task("DONE"));
+    assert_eq!(item_of(&doc, "te"), task("TODO"));
+    // Each task run is its own taskList, so each needs its own localId.
+    let (first, last) = (&doc["content"][0], &doc["content"][2]);
+    assert!(first["attrs"]["localId"].is_string());
+    assert_ne!(first["attrs"]["localId"], last["attrs"]["localId"]);
+}
+
+#[test]
+fn mixed_ordered_list_keeps_the_source_numbering() {
+    let doc = convert("1. [ ] a\n2. b\n");
+    let runs = list_runs(&doc["content"]);
+    assert_eq!(
+        runs,
+        vec![("taskList".to_owned(), 1), ("orderedList".to_owned(), 1)]
+    );
+    assert_eq!(doc["content"][1]["attrs"]["order"], 2);
+    assert_eq!(texts(&doc["content"][1]), ["b"]);
+
+    // The offset counts from the list's own start, not from 1.
+    let doc = convert("3. [ ] a\n4. [ ] b\n5. c\n");
+    assert_eq!(doc["content"][1]["type"], "orderedList");
+    assert_eq!(doc["content"][1]["attrs"]["order"], 5);
+
+    // A task run between plain runs: numbering resumes after it.
+    let doc = convert("5. x\n6. [ ] y\n7. z\n");
+    let runs = list_runs(&doc["content"]);
+    let kinds: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(kinds, ["orderedList", "taskList", "orderedList"]);
+    assert_eq!(doc["content"][0]["attrs"]["order"], 5);
+    assert_eq!(doc["content"][2]["attrs"]["order"], 7);
+    assert_eq!(texts(&doc), ["x", "y", "z"]);
+}
+
+#[test]
+fn a_mixed_ordered_list_inside_a_blockquote_keeps_its_numbering() {
+    // Pins current behaviour: the task run degrades to bullets (a blockquote
+    // forbids taskList) and the plain run stays ordered, still numbered 2.
+    let doc = convert("> 1. [ ] a\n> 2. b\n");
+    let quote = &doc["content"][0];
+    assert_eq!(quote["type"], "blockquote");
+    let runs = list_runs(&quote["content"]);
+    let kinds: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(kinds, ["bulletList", "orderedList"]);
+    assert_eq!(quote["content"][1]["attrs"]["order"], 2);
+    assert_eq!(texts(quote), ["a", "b"]);
+}
+
+#[test]
+fn a_mixed_list_inside_a_blockquote_keeps_every_item_as_a_bullet() {
+    // taskList is not permitted in a blockquote, so task runs degrade to
+    // bullets; plain runs are bullets already. Nothing is dropped.
+    let doc = convert("> - [ ] qa\n> - qb\n> - [x] qc\n");
+    let quote = &doc["content"][0];
+    assert_eq!(quote["type"], "blockquote");
+    let types: Vec<String> = list_runs(&quote["content"])
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    assert!(types.iter().all(|t| t == "bulletList"), "got {types:?}");
+    assert_eq!(texts(quote), ["qa", "qb", "qc"]);
+}
+
+#[test]
+fn a_nested_mixed_list_stays_valid_and_keeps_every_item() {
+    let doc = convert("- parent\n  - [ ] na\n  - nb\n- sibling\n");
+    let outer = &doc["content"][0];
+    assert_eq!(outer["type"], "bulletList");
+    let runs = list_runs(&outer["content"][0]["content"]);
+    let types: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(types, ["paragraph", "taskList", "bulletList"]);
+    assert_eq!(texts(&doc), ["parent", "na", "nb", "sibling"]);
+    assert_eq!(item_of(&doc, "na"), task("TODO"));
+    assert_eq!(item_of(&doc, "nb"), plain());
+}
+
+/// The innermost list item (taskItem or listItem) holding a text node that is
+/// exactly `marker`, as `(type, state)`. Exact, so `a` cannot match `plain`.
+fn item_of(doc: &Value, marker: &str) -> (String, Option<String>) {
+    let chains = ancestors_where(doc, &|t| t == marker);
+    let chain = chains
+        .first()
+        .unwrap_or_else(|| panic!("{marker} lost: {doc}"));
+    let item = chain
+        .iter()
+        .rev()
+        .find(|n| n["type"] == "taskItem" || n["type"] == "listItem")
+        .unwrap_or_else(|| panic!("{marker} is not in a list item: {doc}"));
+    (
+        item["type"].as_str().unwrap().to_owned(),
+        item["attrs"]["state"].as_str().map(str::to_owned),
+    )
+}
+
+fn task(state: &str) -> (String, Option<String>) {
+    ("taskItem".to_owned(), Some(state.to_owned()))
+}
+
+fn plain() -> (String, Option<String>) {
+    ("listItem".to_owned(), None)
+}
+
+#[test]
+fn a_task_item_with_a_nested_list_keeps_its_own_checkbox() {
+    // The checkbox belongs to the item it was written on, not to whichever
+    // nested item closes first.
+    let doc = convert("- [ ] a\n  - plain child\n  - [ ] task child\n- b\n");
+    assert_eq!(item_of(&doc, "a"), task("TODO"));
+    assert_eq!(item_of(&doc, "plain child"), plain());
+    assert_eq!(item_of(&doc, "task child"), task("TODO"));
+    assert_eq!(item_of(&doc, "b"), plain());
+    assert_eq!(texts(&doc), ["a", "plain child", "task child", "b"]);
+}
+
+#[test]
+fn a_nested_task_list_nests_inside_its_parent_task_list() {
+    // ADF nests a task list as a sibling of the taskItem it belongs under,
+    // since a taskItem holds inline content only.
+    let doc = convert("- [x] a\n  - [ ] child\n- [ ] b\n");
+    assert_eq!(item_of(&doc, "a"), task("DONE"));
+    assert_eq!(item_of(&doc, "child"), task("TODO"));
+    assert_eq!(item_of(&doc, "b"), task("TODO"));
+    let list = &doc["content"][0];
+    assert_eq!(list["type"], "taskList");
+    let kinds: Vec<&str> = list["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["taskItem", "taskList", "taskItem"]);
+}
+
+#[test]
+fn a_nested_task_list_inside_a_blockquote_nests_as_bullets() {
+    let doc = convert("> - [ ] a\n>   - [ ] child\n> - [ ] b\n");
+    let quote = &doc["content"][0];
+    assert_eq!(quote["type"], "blockquote");
+    assert!(!quote.to_string().contains("task"), "got {quote}");
+    assert_eq!(item_of(&doc, "a"), plain());
+    assert_eq!(item_of(&doc, "child"), plain());
+    assert_eq!(texts(quote), ["a", "child", "b"]);
+    // `child` nests under a's listItem rather than becoming its sibling.
+    let chain = &ancestors_where(&doc, &|t| t == "child")[0];
+    let items: Vec<&&Value> = chain.iter().filter(|n| n["type"] == "listItem").collect();
+    assert_eq!(items.len(), 2, "got {chain:?}");
+    assert_eq!(texts(items[0])[0], "a");
+}
+
+#[test]
+fn ordered_numbering_skips_blocks_lifted_out_of_a_task_item() {
+    // The nested list under the task item is lifted into the enclosing list
+    // as a block, not an item, so `c` is still item 2.
+    let doc = convert("1. [ ] a\n   - b\n2. c\n");
+    let chain = &ancestors_where(&doc, &|t| t == "c")[0];
+    let list = chain
+        .iter()
+        .rev()
+        .find(|n| n["type"] == "orderedList")
+        .unwrap_or_else(|| panic!("c is not in an ordered list: {doc}"));
+    assert_eq!(list["attrs"]["order"], 2, "doc: {doc}");
+    assert_eq!(texts(&doc), ["a", "b", "c"]);
+}
+
+#[test]
+fn a_code_block_under_a_task_item_follows_its_task_list() {
+    // A taskItem holds inline content only, so the code block becomes a
+    // sibling of the task list instead of invalidating it.
+    let doc = convert("- [ ] a\n\n  ```\n  code\n  ```\n");
+    let runs = list_runs(&doc["content"]);
+    let kinds: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(kinds, ["taskList", "codeBlock"], "doc: {doc}");
 }
 
 #[test]

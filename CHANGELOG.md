@@ -8,6 +8,18 @@ While the version is below 1.0, breaking changes may land in a minor release.
 
 ## [Unreleased]
 
+### Fixed
+
+- A list mixing task and plain items now keeps every item (task runs become
+  task lists, plain runs stay plain lists) instead of dropping the plain ones.
+  A numbered list keeps its numbers across the split.
+- A task item with a nested list keeps its own checkbox, instead of handing it
+  to the first nested item. Its nested task list nests under it; a nested
+  plain list, code block or table follows it as a sibling, since a task item
+  holds text only.
+- `--format html` keeps a code span's styling inside a link, rendering
+  `<a href><code>X</code></a>` instead of the link alone.
+
 ## [0.1.0] - 2026-11-11
 
 ### Added
