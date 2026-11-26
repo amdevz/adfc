@@ -91,7 +91,7 @@ document rendered once can be written to either product.
 | ADF | HTML |
 | --- | --- |
 | `strong` / `em` / `strike` / `underline` | `<strong>` / `<em>` / `<s>` / `<u>` |
-| `code` | `<code>`, dropped inside a link (see below) |
+| `code` | `<code>`, innermost, so inside `<a>` when linked (see below) |
 | `subsup` | `<sub>` / `<sup>` |
 | `link` | `<a href>`, outermost of the text marks |
 | `textColor` / `backgroundColor` | `<span style="color: #x">` / `<span style="background-color: #x">` |
@@ -106,9 +106,12 @@ document rendered once can be written to either product.
 - **Local ids.** `data-local-id` is written only for a 12-character lowercase
   hex id, the form the server issues. adfc's own `t1`, `t2` are omitted so the
   server generates its own.
-- **Code in a link.** The guide keeps the link and drops code styling when a
-  run has both. The renderer emits the link alone rather than a `<code>` the
-  server would discard.
+- **Code in a link.** A run with both marks renders as
+  `<a href><code>X</code></a>`, carrying both marks the ADF has. The guide
+  says the server keeps the link and drops code styling when a run has both,
+  and a live write confirmed it (2026-11-26: `<a href><code>X</code></a>` was
+  stored as text with a link mark only), so a linked code span keeps its code
+  styling only on the ADF path (acli).
 - **Nesting inside a panel.** The guide excludes tables, expands, blockquotes,
   embed cards and nested panels from a panel, though the schema admits a table.
   Each is refused with its path.

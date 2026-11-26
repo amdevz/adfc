@@ -342,6 +342,35 @@ fn eval_fixture_keeps_both_items_of_a_mixed_task_list() {
     );
 }
 
+#[test]
+fn eval_fixture_keeps_code_and_link_marks_on_one_run() {
+    // The eval's code-link rule: the run holding the marker carries both a
+    // `code` mark and a `link` mark to the fixture's URL.
+    let doc = convert(include_str!("fixtures/eval-rich.md"));
+    let mut runs = Vec::new();
+    find_runs(&doc, "FX-CODE-LINK", &mut runs);
+    assert!(
+        runs.iter().any(|run| {
+            let marks = run["marks"].as_array().map_or(&[][..], Vec::as_slice);
+            marks.iter().any(|m| m["type"] == "code")
+                && marks.iter().any(|m| {
+                    m["type"] == "link" && m["attrs"]["href"] == "https://example.com/fx-code-link"
+                })
+        }),
+        "no run with both code and link marks: {runs:?}"
+    );
+}
+
+/// Every text node under `node` whose text contains `marker`.
+fn find_runs<'a>(node: &'a Value, marker: &str, out: &mut Vec<&'a Value>) {
+    if node["text"].as_str().is_some_and(|t| t.contains(marker)) {
+        out.push(node);
+    }
+    for child in node["content"].as_array().into_iter().flatten() {
+        find_runs(child, marker, out);
+    }
+}
+
 /// `(type, item count)` of each block in `content`.
 fn list_runs(content: &Value) -> Vec<(String, usize)> {
     content

@@ -54,13 +54,28 @@ fn link_is_the_outermost_mark() {
 }
 
 #[test]
-fn code_inside_a_link_keeps_the_link() {
-    // The dialect cannot hold both: `<a>` keeps the link and drops code
-    // styling. Emitting the code would lose nothing visible, but nesting
-    // `<code>` in `<a>` is what the server documents as dropped, so the
-    // output says plainly what survives.
+fn code_inside_a_link_keeps_both_marks() {
+    // The ADF carries both `code` and `link`, so the render carries both:
+    // the link outermost, `<code>` innermost around the text.
     assert_eq!(
         html("[`x`](https://x.com)"),
+        "<p><a href=\"https://x.com\"><code>x</code></a></p>"
+    );
+}
+
+#[test]
+fn linked_code_span_escapes_its_text_and_href() {
+    assert_eq!(
+        html("[`<x>`](https://x.com/?a=1&b=2)"),
+        "<p><a href=\"https://x.com/?a=1&amp;b=2\"><code>&lt;x&gt;</code></a></p>"
+    );
+}
+
+#[test]
+fn code_and_link_apart_render_as_before() {
+    assert_eq!(html("`x`"), "<p><code>x</code></p>");
+    assert_eq!(
+        html("[x](https://x.com)"),
         "<p><a href=\"https://x.com\">x</a></p>"
     );
 }
@@ -112,6 +127,15 @@ fn eval_fixture_renders_both_items_of_a_mixed_task_list() {
         .find(plain)
         .unwrap_or_else(|| panic!("no {plain} in {out}"));
     assert!(todo_at < plain_at, "source order lost: {out}");
+}
+
+#[test]
+fn eval_fixture_keeps_code_styling_inside_a_link() {
+    // End to end over the eval's whole fixture: the linked code span keeps
+    // both marks, the link outermost.
+    let out = html(include_str!("fixtures/eval-rich.md"));
+    let linked = "<a href=\"https://example.com/fx-code-link\"><code>FX-CODE-LINK</code></a>";
+    assert!(out.contains(linked), "no {linked} in {out}");
 }
 
 #[test]
