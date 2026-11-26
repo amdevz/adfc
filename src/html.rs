@@ -569,9 +569,9 @@ impl Renderer {
                 other => self.no_mark_form(other, path),
             }
         }
-        // Innermost, so a linked code span is `<a><code>X</code></a>`. ADF
-        // allows only `link` and `annotation` beside `code`, and neither is a
-        // wrapper here, so nothing else sits between them.
+        // Innermost, so a linked code span is `<a><code>X</code></a>`. In
+        // valid ADF only `link` and `annotation` sit beside `code`; for
+        // anything else `<code>` still stays innermost.
         if has_code {
             wrappers.push(("<code>".into(), "</code>"));
         }
